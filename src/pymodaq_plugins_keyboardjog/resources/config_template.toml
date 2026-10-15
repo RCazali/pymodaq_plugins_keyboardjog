@@ -1,0 +1,6 @@
+title = 'Configuration of the Keyboard Jog PyMoDAQ extension'
+
+[setups]
+# Folder of the saved setups (one XML file per setup).
+# Empty = the "KeyboardJog/setups" folder inside the PyMoDAQ local configuration folder.
+folder = ""

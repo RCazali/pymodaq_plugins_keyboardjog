@@ -1,0 +1,24 @@
+# -*- coding: utf-8 -*-
+"""
+Configuration of the Keyboard Jog plugin (PyMoDAQ plugin-template convention).
+
+The user file lives in the PyMoDAQ local folder (``config_keyboardjog.toml``); missing entries are completed
+from ``resources/config_template.toml``.
+"""
+from pathlib import Path
+
+from pymodaq_utils.config import BaseConfig, USER  # noqa: F401  (USER kept for template parity)
+
+
+class Config(BaseConfig):
+    """Main class to deal with configuration values for this plugin"""
+    config_template_path = Path(__file__).parent.joinpath('resources/config_template.toml')
+    config_name = f"config_{__package__.split('pymodaq_plugins_')[1]}"
+
+
+def config_get(config, *path, default=None):
+    """Tolerant read of a config value (works with every pymodaq_utils BaseConfig version)."""
+    try:
+        return config(*path)
+    except Exception:
+        return default
