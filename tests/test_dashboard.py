@@ -85,12 +85,13 @@ def loaded(tmp_path_factory):
 def test_dashboard_runs_the_extension(loaded):
     dashboard, ext = loaded
     from pymodaq_plugins_keyboardjog.extensions.keyboard_jog import KeyboardJog
-    from pymodaq_plugins_keyboardjog.core.model import Binding, JogSetup
+    from pymodaq_plugins_keyboardjog.core.model import VERTICAL, JogSetup
     assert isinstance(ext, KeyboardJog)
     win = ext.mainwindow
     assert win.windowFlags() & QtCore.Qt.WindowStaysOnTopHint
     assert not win.menuBar().isVisible()
-    ext._write_tree(JogSetup(bindings=[Binding.pair('Jog X', 'Jog Y')], steps={'Jog X': 0.05}))
+    ext._write_tree(JogSetup(pair_numbers={'Jog X': 1, 'Jog Y': 1}, axes={'Jog Y': VERTICAL},
+                             steps={'Jog X': 0.05}))
     ext.apply_settings()
     assert wait(lambda: ext.values.get('Jog X') is not None, 10)
     x0 = ext.values['Jog X']

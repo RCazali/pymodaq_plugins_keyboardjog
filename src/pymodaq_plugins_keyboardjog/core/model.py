@@ -2,13 +2,15 @@
 
 Keyboard model:
 
-* the actuators of the main view form numbered **groups**: one group per actuator, except the actuators the user
-  put together in a named **pair**. One group is **selected** (keys 1..9 or a click); the movement keys (W A S D
-  and / or the arrows) move it: left / right the first actuator, down / up the second one of a pair (both move a
-  single actuator); ``+`` / ``-`` scale its steps;
+* every actuator has a few settings of its own: displayed or not, step or continuous motion, step size, **pair
+  number** (``auto``, 1..9, 0) and **keys** (horizontal or vertical);
+* the actuators sharing a pair number form one numbered **group** (a pair: e.g. the X and Y of a stage). An actuator
+  left on ``auto`` is a group of its own and takes the first free number. The number key (1..9, 0) or a click
+  selects a group; the movement keys (W A S D and / or the arrows) move it: left / right the *horizontal* actuator,
+  down / up the *vertical* one; ``+`` / ``-`` scale its steps;
 * **extra keys** bind an actuator to two keys of the user's choice, active whatever the selection.
 
-A setup holds the displayed actuators, the pairs, the extra keys, the step size of each actuator and the options.
+A setup holds all of this plus the general options; it is saved / loaded by name.
 """
 from __future__ import annotations
 
@@ -16,85 +18,98 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .actions import MoveAction
-from .keys import DOWN, LEFT, MOVE_KEY_SETS, RESERVED_KEYS, RIGHT, UP, WASD, key_name, parse_key  # noqa: F401
+from .keys import DOWN, LEFT, RESERVED_KEYS, RIGHT, UP, WASD, key_name, parse_key
 
-STEP_MODE = 'step'
-CONTINUOUS_MODE = 'continuous'
-MOTION_MODES = (STEP_MODE, CONTINUOUS_MODE)
+HORIZONTAL = 'horizontal'
+VERTICAL = 'vertical'
+AXES = (HORIZONTAL, VERTICAL)
 
-PAIR = 'pair'
-SINGLE = 'single'
+AUTO = 'auto'
+GROUP_NUMBERS = tuple(range(1, 11))       # 10 is the '0' key
+PAIR_CHOICES = (AUTO,) + tuple(str(n % 10) for n in GROUP_NUMBERS)
 
 DEFAULT_STEP = 1.0
 
 
+def number_label(number: Optional[int]) -> str:
+    """Group number -> its key ('0' for 10, '' for no number)"""
+    if number is None:
+        return ''
+    return str(number % 10)
+
+
+def number_of(label) -> Optional[int]:
+    """Pair choice ('auto', '1'..'9', '0') -> group number (None for auto / invalid)"""
+    text = str(label).strip()
+    if not text.isdigit():
+        return None
+    value = int(text)
+    if value == 0:
+        return 10
+    return value if value in GROUP_NUMBERS else None
+
+
 @dataclass
-class AxisBinding:
-    """One actuator, with its two keys for an extra binding (unused in a pair: the movement keys move the pairs)"""
+class ExtraKeys:
+    """Two keys of the user's choice moving one actuator (- / +), whatever the selection"""
     actuator: str = ''
     key_minus: str = ''
     key_plus: str = ''
 
 
 @dataclass
-class Binding:
-    """A named pair of actuators (one group moved with the movement keys) or a single actuator on extra keys"""
-    kind: str = SINGLE
-    axes: List[AxisBinding] = field(default_factory=list)
-    name: str = ''
-
-    @classmethod
-    def pair(cls, x: str = '', y: str = '', name: str = '') -> 'Binding':
-        return cls(PAIR, [AxisBinding(x), AxisBinding(y)], name)
-
-    def title(self) -> str:
-        return self.name or ' / '.join(a.actuator or '-' for a in self.axes)
-
-    @classmethod
-    def single(cls, actuator: str = '', key_minus: str = '', key_plus: str = '') -> 'Binding':
-        return cls(SINGLE, [AxisBinding(actuator, key_minus, key_plus)])
-
-    def actuators(self) -> List[str]:
-        return [a.actuator for a in self.axes if a.actuator]
-
-
-@dataclass
 class JogSetup:
     """The complete configuration of the extension, saved / loaded as a named setup"""
     displayed: List[str] = field(default_factory=list)
-    bindings: List[Binding] = field(default_factory=list)
     steps: Dict[str, float] = field(default_factory=dict)
-    motion_mode: str = STEP_MODE
+    continuous: List[str] = field(default_factory=list)          # actuators in continuous mode
+    pair_numbers: Dict[str, int] = field(default_factory=dict)   # actuator -> 1..10 (absent: auto)
+    axes: Dict[str, str] = field(default_factory=dict)           # actuator -> horizontal / vertical
+    pair_names: Dict[int, str] = field(default_factory=dict)     # group number -> name of the pair
+    extra_keys: List[ExtraKeys] = field(default_factory=list)
     move_keys: str = WASD
     step_factor: float = 10.0
     always_on_top: bool = True
+    show_history: bool = False
     min_interval_ms: int = 0
     stop_on_focus_loss: bool = True
     move_timeout_s: float = 10.0
 
-    @property
-    def pairs(self) -> List[Binding]:
-        return [b for b in self.bindings if b.kind == PAIR]
+    def step(self, actuator: str) -> float:
+        return float(self.steps.get(actuator, DEFAULT_STEP))
 
-    @property
-    def extra_keys(self) -> List[Binding]:
-        return [b for b in self.bindings if b.kind == SINGLE]
+    def axis(self, actuator: str) -> str:
+        axis = self.axes.get(actuator, HORIZONTAL)
+        return axis if axis in AXES else HORIZONTAL
 
-    def bound_actuators(self) -> List[str]:
+    def number(self, actuator: str) -> Optional[int]:
+        number = self.pair_numbers.get(actuator)
+        return number if number in GROUP_NUMBERS else None
+
+    def is_continuous(self, actuator: str) -> bool:
+        return actuator in self.continuous
+
+    def key_bound_actuators(self) -> List[str]:
         out = []
-        for b in self.bindings:
-            for name in b.actuators():
-                if name not in out:
-                    out.append(name)
+        for extra in self.extra_keys:
+            if extra.actuator and extra.actuator not in out:
+                out.append(extra.actuator)
         return out
 
     def shown_actuators(self, order: Iterable[str]) -> List[str]:
-        """Actuators of the main view, in the dashboard order: the displayed ones and every bound one"""
-        wanted = set(self.displayed) | set(self.bound_actuators())
+        """Actuators of the main view, in the dashboard order: the displayed ones, every paired one and every one
+        with extra keys"""
+        wanted = set(self.displayed) | {a for a in self.pair_numbers if self.number(a)} | set(self.key_bound_actuators())
         return [name for name in order if name in wanted]
 
-    def step(self, actuator: str) -> float:
-        return float(self.steps.get(actuator, DEFAULT_STEP))
+    def used_actuators(self) -> List[str]:
+        """Every actuator this setup refers to"""
+        out = []
+        for name in (list(self.displayed) + list(self.pair_numbers) + self.key_bound_actuators()
+                     + list(self.continuous) + list(self.axes) + list(self.steps)):
+            if name not in out:
+                out.append(name)
+        return out
 
     def restricted_to(self, present: Sequence[str]) -> Tuple['JogSetup', List[str]]:
         """Copy keeping only the actuators present in the dashboard, with a message for each skipped item"""
@@ -103,76 +118,108 @@ class JogSetup:
         missing_displayed = [a for a in self.displayed if a not in present]
         if missing_displayed:
             warnings.append(f"not in the dashboard, not displayed: {', '.join(missing_displayed)}")
-        bindings = []
-        for b in self.bindings:
-            axes = []
-            for axis in b.axes:
-                if axis.actuator and axis.actuator not in present:
-                    what = 'pair' if b.kind == PAIR else 'extra keys'
-                    warnings.append(f"{what} of '{axis.actuator}' skipped: not in the dashboard")
-                    axes.append(AxisBinding('', axis.key_minus, axis.key_plus))
-                else:
-                    axes.append(AxisBinding(axis.actuator, axis.key_minus, axis.key_plus))
-            if any(a.actuator for a in axes):
-                bindings.append(Binding(b.kind, axes, b.name))
+        for name, number in self.pair_numbers.items():
+            if name not in present:
+                warnings.append(f"pair {number_label(number)}: '{name}' skipped, not in the dashboard")
+        extra_keys = []
+        for extra in self.extra_keys:
+            if extra.actuator and extra.actuator not in present:
+                warnings.append(f"extra keys of '{extra.actuator}' skipped: not in the dashboard")
+            else:
+                extra_keys.append(ExtraKeys(extra.actuator, extra.key_minus, extra.key_plus))
+        keep = lambda d: {k: v for k, v in d.items() if k in present}  # noqa: E731
         setup = JogSetup(**{**self.__dict__,
                             'displayed': [a for a in self.displayed if a in present],
-                            'bindings': bindings,
-                            'steps': {k: v for k, v in self.steps.items() if k in present}})
+                            'steps': keep(self.steps),
+                            'continuous': [a for a in self.continuous if a in present],
+                            'pair_numbers': keep(self.pair_numbers),
+                            'axes': keep(self.axes),
+                            'pair_names': dict(self.pair_names),
+                            'extra_keys': extra_keys})
         return setup, warnings
 
 
 @dataclass
 class Group:
-    """A numbered group of the main view: one actuator, or a named pair"""
+    """A numbered group of the main view: one actuator, or a pair (actuators sharing a pair number)"""
     actuators: List[str]
-    name: str = ''                 # pairs only
+    number: Optional[int] = None
+    name: str = ''
+    horizontal: Optional[str] = None    # moved by left / right
+    vertical: Optional[str] = None      # moved by down / up
+    explicit: bool = False              # pair number chosen by the user (not auto)
 
     @property
     def is_pair(self) -> bool:
-        return len(self.actuators) == 2
+        return len(self.actuators) >= 2
+
+    @property
+    def label(self) -> str:
+        return number_label(self.number)
+
+    @property
+    def title(self) -> str:
+        return self.name or ' / '.join(self.actuators)
+
+    @property
+    def moved(self) -> List[str]:
+        """The actuators the movement keys move: horizontal first"""
+        return [a for a in (self.horizontal, self.vertical) if a]
 
     def __contains__(self, actuator: str) -> bool:
         return actuator in self.actuators
 
 
 def build_groups(setup: JogSetup, order: Sequence[str]) -> Tuple[List[Group], List[str]]:
-    """The numbered groups of the main view (one actuator or a pair, in the dashboard order), and the problems"""
+    """The numbered groups of the main view (sorted by number) and the problems found
+
+    The actuators of an explicit number form one group. The others are groups of one actuator numbered with the free
+    numbers, in the dashboard order (no number at all once the 10 numbers are taken: click to select them). In a group,
+    the first horizontal actuator takes left / right, the first vertical one down / up; any other one is reported.
+    """
     problems = []
-    partner: Dict[str, Binding] = {}
-    for pair in setup.pairs:
-        names = [a.actuator for a in pair.axes]
-        if len(names) != 2 or not all(names):
-            continue                                     # incomplete pair: its actuator stays a single group
-        if names[0] == names[1]:
-            problems.append(f"pair '{names[0]}' / '{names[1]}': twice the same actuator")
-            continue
-        busy = [n for n in names if n in partner]
-        if busy:
-            problems.append(f"'{busy[0]}' is in several pairs: only the first one is used")
-            continue
-        partner[names[0]] = partner[names[1]] = pair
-    groups: List[Group] = []
-    seen = set()
-    for name in setup.shown_actuators(order):
-        if name in seen:
-            continue
-        pair = partner.get(name)
-        group = Group([a.actuator for a in pair.axes], pair.title()) if pair is not None else Group([name])
-        groups.append(group)
-        seen.update(group.actuators)
+    shown = setup.shown_actuators(order)
+    explicit: Dict[int, List[str]] = {}
+    automatic = []
+    for name in shown:
+        number = setup.number(name)
+        if number is None:
+            automatic.append(name)
+        else:
+            explicit.setdefault(number, []).append(name)
+    free = [n for n in GROUP_NUMBERS if n not in explicit]
+    groups = [Group(names, number, explicit=True) for number, names in explicit.items()]
+    groups += [Group([name], free.pop(0) if free else None) for name in automatic]
+
+    for group in groups:
+        horizontal = [a for a in group.actuators if setup.axis(a) == HORIZONTAL]
+        vertical = [a for a in group.actuators if setup.axis(a) == VERTICAL]
+        group.horizontal = horizontal[0] if horizontal else None
+        group.vertical = vertical[0] if vertical else None
+        for extra, first, keys in [(a, horizontal[0], 'horizontal') for a in horizontal[1:]] + \
+                                  [(a, vertical[0], 'vertical') for a in vertical[1:]]:
+            problems.append(f"pair {group.label}: '{extra}' and '{first}' are both {keys}: '{extra}' is not moved "
+                            f"by the movement keys")
+        group.actuators = group.moved + [a for a in group.actuators if a not in group.moved]
+        if group.is_pair:
+            group.name = setup.pair_names.get(group.number, '').strip()
+    groups.sort(key=lambda g: (g.number is None, g.number or 0, order.index(g.actuators[0])))
     return groups, problems
 
 
 def direction_map(group: Optional[Group], group_index: int = -1) -> Dict[str, MoveAction]:
-    """Movement direction -> move of the selected group: left/right the first actuator, down/up the second one
-    (or the same actuator for a single group)"""
-    if group is None or not group.actuators:
+    """Movement direction -> move of the selected group: left / right its horizontal actuator, down / up its
+    vertical one"""
+    if group is None:
         return {}
-    x = group.actuators[0]
-    y = group.actuators[1] if group.is_pair else x
-    return {LEFT: MoveAction(x, -1, group_index), RIGHT: MoveAction(x, +1, group_index),
-            DOWN: MoveAction(y, -1, group_index), UP: MoveAction(y, +1, group_index)}
+    out = {}
+    if group.horizontal:
+        out[LEFT] = MoveAction(group.horizontal, -1, group_index)
+        out[RIGHT] = MoveAction(group.horizontal, +1, group_index)
+    if group.vertical:
+        out[DOWN] = MoveAction(group.vertical, -1, group_index)
+        out[UP] = MoveAction(group.vertical, +1, group_index)
+    return out
 
 
 def build_keymap(setup: JogSetup, reserved: Iterable[int] = ()) -> Tuple[Dict[int, MoveAction], List[str]]:
@@ -185,22 +232,21 @@ def build_keymap(setup: JogSetup, reserved: Iterable[int] = ()) -> Tuple[Dict[in
     reserved = RESERVED_KEYS | frozenset(reserved)
     problems: List[str] = []
     claims: Dict[int, List[MoveAction]] = {}
-    for binding in setup.extra_keys:
-        for axis in binding.axes:
-            if not axis.actuator:
+    for extra in setup.extra_keys:
+        if not extra.actuator:
+            continue
+        for text, direction in ((extra.key_minus, -1), (extra.key_plus, +1)):
+            if not (text or '').strip():
                 continue
-            for text, direction in ((axis.key_minus, -1), (axis.key_plus, +1)):
-                if not (text or '').strip():
-                    continue
-                key = parse_key(text)
-                sign = '-' if direction < 0 else '+'
-                if key is None:
-                    problems.append(f"'{text}' ({axis.actuator} {sign}) is not a valid key")
-                    continue
-                if key in reserved:
-                    problems.append(f"'{key_name(key)}' ({axis.actuator} {sign}) is reserved")
-                    continue
-                claims.setdefault(key, []).append(MoveAction(axis.actuator, direction))
+            key = parse_key(text)
+            sign = '-' if direction < 0 else '+'
+            if key is None:
+                problems.append(f"'{text}' ({extra.actuator} {sign}) is not a valid key")
+                continue
+            if key in reserved:
+                problems.append(f"'{key_name(key)}' ({extra.actuator} {sign}) is reserved")
+                continue
+            claims.setdefault(key, []).append(MoveAction(extra.actuator, direction))
     keymap: Dict[int, MoveAction] = {}
     for key, actions in claims.items():
         if len(actions) > 1:

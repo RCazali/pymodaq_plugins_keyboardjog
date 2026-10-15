@@ -1,4 +1,4 @@
-"""The compact main view: one row per shown actuator, the focus indicator and the (hidden) settings.
+"""The compact main view: one row per shown actuator, the focus indicator, the (hidden) history and settings.
 
 Focus indicator (main safety feature): the panel is *armed* only while it owns the keyboard focus in the active
 window. Armed = green border, the keys move the actuators. Not armed = red border, every key is ignored.
@@ -20,11 +20,31 @@ Qt = QtCore.Qt
 ARMED_COLOR = '#27ae60'
 DISARMED_COLOR = '#c0392b'
 WARNING_COLOR = '#d35400'
+BUSY_STYLE = 'background-color: #e67e22; color: white; border-radius: 3px; padding: 0px 4px;'
+IDLE_STYLE = 'padding: 0px 4px;'
 SELECTED_MARK = '▶'
 
 
 def hint_text(move_keys_label: str) -> str:
-    return f'1-9 or click: select   {move_keys_label}: move   + / -: step   right-click: pair'
+    return f'1-9, 0 or click: select   {move_keys_label}: move   + / -: step   right-click: options'
+
+
+def history_icon(shown: bool) -> Optional[QtGui.QIcon]:
+    """The 'graph' icon of the DAQ_Move modules (PyMoDAQ 5.3 Material icon, 5.1 png), None if not found"""
+    try:
+        from pymodaq_gui.managers.action_manager import create_icon
+    except ImportError:  # pragma: no cover
+        return None
+    color = ARMED_COLOR if shown else 'gray'
+    for name in ('bid_landscape' if shown else 'bid_landscape_disabled', 'graph'):
+        for kwargs in ({'icon_color': color}, {}):        # 5.1: no color argument
+            try:
+                icon = create_icon(name, **kwargs)
+            except Exception:
+                continue
+            if icon is not None and not icon.isNull():
+                return icon
+    return None
 
 
 @dataclass
@@ -61,6 +81,7 @@ class _Row:
         self.info = info
         self.last_value: Optional[float] = None
         self.last_step: Optional[float] = None
+        self.continuous = False
         self.number = QtWidgets.QLabel(info.number)
         self.number.setMinimumWidth(22)
         self.name = QtWidgets.QLabel(info.label)
@@ -69,6 +90,7 @@ class _Row:
         self.value = QtWidgets.QLabel('' if info.is_header else '---')
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.value.setMinimumWidth(90)
+        self.value.setStyleSheet(IDLE_STYLE)
         self.step = QtWidgets.QLabel('')
         self.step.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.keys = QtWidgets.QLabel('')
@@ -103,6 +125,7 @@ class _Row:
 class JogPanel(QtWidgets.QFrame):
     armed_changed = QtCore.Signal(bool)
     settings_toggled = QtCore.Signal(bool)
+    history_toggled = QtCore.Signal(bool)
     always_on_top_toggled = QtCore.Signal(bool)
     group_clicked = QtCore.Signal(int)
     context_requested = QtCore.Signal(int, str, QtCore.QPoint)   # group, actuator ('' = pair header), global pos
@@ -128,17 +151,23 @@ class JogPanel(QtWidgets.QFrame):
         self.on_top_check = QtWidgets.QCheckBox('On top')
         self.on_top_check.setChecked(True)
         self.on_top_check.setToolTip('Keep this window above the other windows')
+        self.history_button = QtWidgets.QToolButton()
+        self.history_button.setCheckable(True)
+        self.history_button.setAutoRaise(True)
+        self.history_button.setToolTip('Show / hide the history of the moves of the selected group')
+        self._update_history_icon(False)
         self.settings_button = QtWidgets.QToolButton()
         self.settings_button.setText('Settings')
         self.settings_button.setCheckable(True)
         self.settings_button.setAutoRaise(True)
         self.settings_button.setToolTip('Show / hide the settings')
-        for w in (self.on_top_check, self.settings_button):
+        for w in (self.on_top_check, self.history_button, self.settings_button):
             w.setFocusPolicy(Qt.NoFocus)     # clicking them must not take the focus from the panel
         header.addWidget(self.state_label)
         header.addStretch()
         header.addWidget(self.mode_label)
         header.addWidget(self.on_top_check)
+        header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
         layout.addLayout(header)
 
@@ -162,12 +191,18 @@ class JogPanel(QtWidgets.QFrame):
         self.message_label.setVisible(False)
         layout.addWidget(self.message_label)
 
+        self.history_container = QtWidgets.QWidget()
+        QtWidgets.QVBoxLayout(self.history_container).setContentsMargins(0, 4, 0, 0)
+        self.history_container.setVisible(False)
+        layout.addWidget(self.history_container, 1)
+
         self.settings_container = QtWidgets.QWidget()
         QtWidgets.QVBoxLayout(self.settings_container).setContentsMargins(0, 4, 0, 0)
         self.settings_container.setVisible(False)
         layout.addWidget(self.settings_container, 1)
 
         self.on_top_check.toggled.connect(self.always_on_top_toggled.emit)
+        self.history_button.toggled.connect(self._toggle_history)
         self.settings_button.toggled.connect(self._toggle_settings)
 
         self._watchdog = QtCore.QTimer(self)
@@ -189,6 +224,28 @@ class JogPanel(QtWidgets.QFrame):
     def _toggle_settings(self, show: bool):
         self.settings_container.setVisible(show)
         self.settings_toggled.emit(show)
+
+    def set_history_widget(self, widget: QtWidgets.QWidget):
+        self.history_container.layout().addWidget(widget)
+
+    def history_visible(self) -> bool:
+        return self.history_button.isChecked()
+
+    def show_history(self, show: bool):
+        self.history_button.setChecked(show)
+
+    def _toggle_history(self, show: bool):
+        self.history_container.setVisible(show)
+        self._update_history_icon(show)
+        self.history_toggled.emit(show)
+
+    def _update_history_icon(self, shown: bool):
+        icon = history_icon(shown)
+        if icon is not None:
+            self.history_button.setIcon(icon)
+            self.history_button.setText('')
+        else:
+            self.history_button.setText('History')
 
     def set_rows(self, rows: Iterable[RowInfo]):
         for row in list(self._rows.values()) + list(self._headers.values()):
@@ -240,12 +297,27 @@ class JogPanel(QtWidgets.QFrame):
         row = self._rows.get(name)
         return row.value.text() if row is not None else ''
 
-    def set_step(self, name: str, step: float):
+    def set_step(self, name: str, step: float, continuous: Optional[bool] = None):
+        """Step of an actuator, shown as 'step 0.01' (step mode) or 'cont. 0.01' (continuous mode)"""
         row = self._rows.get(name)
         if row is not None:
+            if continuous is not None:
+                row.continuous = continuous
             row.last_step = step
-            row.step.setText(f'step {step:.4g}')
+            row.step.setText(f"{'cont.' if row.continuous else 'step'} {step:.4g}")
+            row.step.setToolTip('continuous: steps repeated while the key is held (Shift x10, Ctrl /10)'
+                                if row.continuous else 'step mode: one key press = one step')
             row.value.setText(format_value(row.last_value, row.info.units, step))
+
+    def set_busy(self, name: str, busy: bool):
+        """Value highlighted while the actuator moves"""
+        row = self._rows.get(name)
+        if row is not None:
+            row.value.setStyleSheet(BUSY_STYLE if busy else IDLE_STYLE)
+
+    def is_busy_shown(self, name: str) -> bool:
+        row = self._rows.get(name)
+        return row is not None and row.value.styleSheet() == BUSY_STYLE
 
     def step_text(self, name: str) -> str:
         row = self._rows.get(name)

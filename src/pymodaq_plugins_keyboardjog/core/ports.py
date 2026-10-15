@@ -1,7 +1,7 @@
 """Access to the Dashboard actuators.
 
 **This is the only module touching DAQ_Move objects.** It uses their public API only: ``move_rel``,
-``stop_motion``, ``get_actuator_value``, the ``current_value_signal`` / ``move_done_signal`` signals and the
+``move_abs`` (go back to a point of the history), ``stop_motion``, ``get_actuator_value``, the ``current_value_signal`` / ``move_done_signal`` signals and the
 ``title``, ``units``, ``initialized_state``, ``move_done_bool`` properties. DAQ_Move handles its own hardware thread,
 everything here runs in the Qt main thread.
 """
@@ -43,6 +43,10 @@ class ActuatorPort(ABC):
     @abstractmethod
     def move_rel(self, delta: float):
         """Start a relative move, its end is signalled through ``on_done``"""
+
+    def move_abs(self, value: float):
+        """Start an absolute move (go back to a point of the history), its end is signalled through ``on_done``"""
+        raise NotImplementedError(f'{self.name}: no absolute move')
 
     @abstractmethod
     def stop(self):
@@ -112,6 +116,9 @@ class DAQMovePort(ActuatorPort):
 
     def move_rel(self, delta: float):
         self.module.move_rel(float(delta))
+
+    def move_abs(self, value: float):
+        self.module.move_abs(float(value))
 
     def stop(self):
         self.module.stop_motion()

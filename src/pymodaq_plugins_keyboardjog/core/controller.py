@@ -2,12 +2,14 @@
 
 Rules (safety, see the specification):
 
-* moves are relative steps only (``move_rel``);
-* **no move is ever queued**: for a given actuator the next step is sent only once the previous one is done
+* keyboard moves are relative steps (``move_rel``); the only absolute move is the explicit "go back" to a point of
+  the history, after confirmation (``move_to``);
+* **no move is ever queued**: for a given actuator the next move is sent only once the previous one is done
   (move-done signal), and never while the actuator is moved by something else; a request arriving while the
   actuator is busy is dropped;
-* step mode: one press = one step; continuous mode: steps are repeated while the action is held, each one after
-  the previous move is done (and after an optional minimum interval);
+* each actuator is in step mode (one press = one step) or in continuous mode (steps repeated while the action is
+  held, each one sent when the previous one is done, after an optional minimum interval, as the alignment jog of
+  LaserControl);
 * release: the repetition stops at once (the step in progress finishes);
 * ``release_all`` (focus lost) forgets every held action and can stop the actuators moved by this extension.
 
@@ -18,14 +20,14 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List, Optional
 
 from qtpy import QtCore
 
 from pymodaq_utils.logger import set_logger, get_module_name
 
 from .actions import InputSource, MoveAction
-from .model import CONTINUOUS_MODE, DEFAULT_STEP, MOTION_MODES, STEP_MODE
+from .model import DEFAULT_STEP
 from .ports import ActuatorPort
 
 logger = set_logger(get_module_name(__file__))
@@ -35,7 +37,7 @@ TICK_MS = 10
 
 @dataclass
 class AxisState:
-    pending: bool = False             # a step sent by this extension is not done yet
+    pending: bool = False             # a move sent by this extension is not done yet
     sent_at: float = 0.0
     done_at: float = float('-inf')
     held: List[int] = field(default_factory=list)  # held directions, the last one wins
@@ -44,13 +46,15 @@ class AxisState:
 class MotionController(QtCore.QObject):
     step_changed = QtCore.Signal(str, float)
     message = QtCore.Signal(str)
+    move_started = QtCore.Signal(str)              # a move was sent by this extension
+    move_finished = QtCore.Signal(str, object)     # move done (any origin) with the reached value (None: unknown)
 
     def __init__(self, clock: Callable[[], float] = time.monotonic, parent: QtCore.QObject = None):
         super().__init__(parent)
         self._clock = clock
         self.ports: Dict[str, ActuatorPort] = {}
         self.steps: Dict[str, float] = {}
-        self._mode = STEP_MODE
+        self._continuous = frozenset()
         self.min_interval_s = 0.0
         self.move_timeout_s = 10.0
         self.multiplier = 1.0
@@ -72,19 +76,24 @@ class MotionController(QtCore.QObject):
         self.ports = dict(ports)
         self._states = {name: AxisState() for name in self.ports}
         for name, port in self.ports.items():
-            port.on_done = lambda value, n=name: self.on_move_done(n)
+            port.on_done = lambda value, n=name: self.on_move_done(n, value)
 
     @property
-    def mode(self) -> str:
-        return self._mode
+    def continuous(self) -> frozenset:
+        """The actuators in continuous mode (the others are in step mode)"""
+        return self._continuous
 
-    @mode.setter
-    def mode(self, mode: str):
-        if mode not in MOTION_MODES:
-            raise ValueError(f'unknown motion mode {mode}')
-        if mode != self._mode:
-            self.release_all(stop=False)
-            self._mode = mode
+    @continuous.setter
+    def continuous(self, names: Iterable[str]):
+        names = frozenset(names)
+        for name in names ^ self._continuous:          # mode changed: what is held is released
+            state = self._states.get(name)
+            if state is not None:
+                state.held.clear()
+        self._continuous = names
+
+    def is_continuous(self, name: str) -> bool:
+        return name in self._continuous
 
     def step(self, name: str) -> float:
         return float(self.steps.get(name, DEFAULT_STEP))
@@ -114,9 +123,9 @@ class MotionController(QtCore.QObject):
         if action.direction in state.held:
             state.held.remove(action.direction)
         state.held.append(action.direction)
-        multiplier = self.multiplier if self._mode == CONTINUOUS_MODE else 1.0
-        self._try_step(action.actuator, action.direction, multiplier, report=True)
-        if self._mode == CONTINUOUS_MODE:
+        continuous = self.is_continuous(action.actuator)
+        self._try_step(action.actuator, action.direction, self.multiplier if continuous else 1.0, report=True)
+        if continuous:
             self._timer.start()
 
     def release(self, action: MoveAction):
@@ -144,14 +153,21 @@ class MotionController(QtCore.QObject):
         state = self._states.get(name)
         return bool(state is not None and state.held)
 
+    def move_to(self, name: str, value: float) -> bool:
+        """Absolute move (go back to a point of the history), with the same rules as a step"""
+        return self._send(name, lambda port: port.move_abs(float(value)), f'move_abs({value:g})', report=True)
+
     # ------------------------------------------------------------------ motion
-    def on_move_done(self, name: str):
+    def on_move_done(self, name: str, value: Optional[float] = None):
         state = self._states.get(name)
-        if state is not None and state.pending:
+        if state is None:
+            return
+        if state.pending:
             state.pending = False
             state.done_at = self._clock()
-            if self._mode == CONTINUOUS_MODE and state.held:
-                self.tick()
+        self.move_finished.emit(name, value)
+        if self.is_continuous(name) and state.held:
+            self.tick()
 
     def tick(self):
         now = self._clock()
@@ -163,7 +179,8 @@ class MotionController(QtCore.QObject):
                 msg = f'{name}: no move-done after {self.move_timeout_s:g} s, actuator released'
                 logger.warning(msg)
                 self.message.emit(msg)
-            if (self._mode == CONTINUOUS_MODE and state.held and not state.pending
+                self.move_finished.emit(name, None)
+            if (self.is_continuous(name) and state.held and not state.pending
                     and now - state.done_at >= self.min_interval_s):
                 self._try_step(name, state.held[-1], self.multiplier)
             active = active or state.pending or bool(state.held)
@@ -174,6 +191,10 @@ class MotionController(QtCore.QObject):
             self._timer.stop()
 
     def _try_step(self, name: str, direction: int, multiplier: float, report: bool = False) -> bool:
+        delta = direction * self.step(name) * multiplier
+        return self._send(name, lambda port: port.move_rel(delta), f'move_rel({delta:g})', report)
+
+    def _send(self, name: str, move: Callable[[ActuatorPort], None], what: str, report: bool) -> bool:
         port = self.ports.get(name)
         state = self._states.get(name)
         if port is None or state is None:
@@ -190,15 +211,15 @@ class MotionController(QtCore.QObject):
             if report:
                 self.message.emit(f'{name} is moved by something else: key ignored')
             return False
-        delta = direction * self.step(name) * multiplier
         try:
-            port.move_rel(delta)
+            move(port)
         except Exception as e:
-            logger.warning(f'{name}: move_rel({delta:g}) failed: {e}')
+            logger.warning(f'{name}: {what} failed: {e}')
             self.message.emit(f'{name}: move failed ({e})')
             return False
         state.pending = True
         state.sent_at = self._clock()
+        self.move_started.emit(name)
         if not self._timer.isActive():
             self._timer.start()
         return True

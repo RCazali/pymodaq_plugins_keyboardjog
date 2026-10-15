@@ -1,23 +1,29 @@
 """Settings tree of the extension (a PyMoDAQ / pyqtgraph Parameter tree) and its conversion to / from a JogSetup.
 
 The tree is the editor of the setup: ``read_setup`` builds the JogSetup the controller uses from it, ``write_setup``
-fills it from a loaded setup. Its dynamic parts (one group per actuator of the Dashboard, one group per binding)
+fills it from a loaded setup. Its dynamic parts (one group per actuator of the Dashboard, one group per extra keys)
 are rebuilt by the functions below.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from pymodaq_gui.parameter import Parameter
 
 from ..core.keys import MOVE_KEY_SETS, WASD, normalize_key_name
-from ..core.model import Binding, JogSetup, MOTION_MODES, PAIR, SINGLE
+from ..core.model import AUTO, AXES, PAIR_CHOICES, ExtraKeys, JogSetup, number_label, number_of
 
-KEY_TIP = ("Key name, e.g. PgUp, PgDown, Home, End, Ins, Del, A, Z, F2... (no modifiers; the arrows, the digits, "
+KEY_TIP = ("Key name, e.g. PgUp, PgDown, Home, End, Ins, Del, F2... (no modifiers; the digits, the movement keys, "
            "'+', '-', '=', Shift, Ctrl and Tab are reserved)")
+PAIR_TIP = ("Number key (1..9, 0) selecting this actuator. Two actuators with the same number form a pair, moved "
+            "together: one horizontal, one vertical. auto: a number of its own, the first free one")
+AXIS_TIP = ('horizontal: moved by the left / right keys (A / D or Q / D, arrows). '
+            'vertical: moved by the down / up keys (S / W or S / Z, arrows)')
+CONTINUOUS_TIP = ('off: one key press = one step. on: steps repeated while the key is held, each one once the '
+                  'previous move is done (Shift = step x10, Ctrl = step /10 while held)')
 
-GENERAL_NAMES = ('motion_mode', 'move_keys', 'step_factor', 'always_on_top', 'min_interval_ms', 'stop_on_focus_loss',
-                 'move_timeout_s')
+GENERAL_NAMES = ('move_keys', 'step_factor', 'always_on_top', 'show_history', 'min_interval_ms',
+                 'stop_on_focus_loss', 'move_timeout_s')
 
 
 def settings_params() -> list:
@@ -33,10 +39,10 @@ def settings_params() -> list:
              'tip': 'Save the current configuration under the new name'},
             {'title': 'Delete', 'name': 'delete', 'type': 'action', 'tip': 'Delete the setup selected above'},
         ]},
+        {'title': 'Problems:', 'name': 'problems', 'type': 'text', 'value': '', 'readonly': True, 'visible': False},
+        {'title': 'Actuators', 'name': 'actuators', 'type': 'group', 'children': [],
+         'tip': 'Display, motion mode, step, pair number and keys of each actuator of the Dashboard'},
         {'title': 'Motion', 'name': 'general', 'type': 'group', 'children': [
-            {'title': 'Mode:', 'name': 'motion_mode', 'type': 'list', 'limits': list(MOTION_MODES), 'value': 'step',
-             'tip': 'step: one key press = one step. continuous: steps repeated while the key is held '
-                    '(Shift = step x10, Ctrl = step /10 while held)'},
             {'title': 'Move keys:', 'name': 'move_keys', 'type': 'list', 'limits': list(MOVE_KEY_SETS),
              'value': WASD, 'tip': 'Keys moving the selection. wasd: the W A S D keys by their position on the '
                                    'keyboard (Z Q S D on an AZERTY keyboard). arrows: the arrow keys. both.'},
@@ -49,17 +55,13 @@ def settings_params() -> list:
             {'title': 'Move timeout (s):', 'name': 'move_timeout_s', 'type': 'float', 'value': 10.0, 'min': 0.5,
              'tip': 'An actuator whose move-done signal does not arrive within this time accepts new steps again'},
             {'title': 'Always on top:', 'name': 'always_on_top', 'type': 'bool', 'value': True},
+            {'title': 'Show history:', 'name': 'show_history', 'type': 'bool', 'value': False,
+             'tip': 'History of the moves of the selected group (also the graph button of the window)'},
         ]},
-        {'title': 'Actuators (display / step)', 'name': 'actuators', 'type': 'group', 'children': []},
-        {'title': 'Pairs and extra keys', 'name': 'bindings', 'type': 'group', 'children': [
-            {'title': 'Add pair', 'name': 'add_pair', 'type': 'action',
-             'tip': 'Two actuators selected together (one number): Left/Right move the first one, Down/Up the '
-                    'second one (e.g. the X and Y of a stage)'},
-            {'title': 'Add extra keys', 'name': 'add_single', 'type': 'action',
+        {'title': 'Extra keys', 'name': 'extra', 'type': 'group', 'expanded': False, 'children': [
+            {'title': 'Add extra keys', 'name': 'add', 'type': 'action',
              'tip': 'Two keys of your choice that always move an actuator, whatever the selection '
                     '(e.g. PgDown / PgUp for a focus)'},
-            {'title': 'Problems:', 'name': 'problems', 'type': 'text', 'value': '', 'readonly': True,
-             'visible': False},
         ]},
     ]
 
@@ -69,99 +71,105 @@ def fill_actuators(settings: Parameter, names: Sequence[str], units: Dict[str, s
     group = settings.child('actuators')
     group.clearChildren()
     for i, name in enumerate(names):
+        number = setup.number(name)
         group.addChild({'title': name, 'name': f'act{i:02d}', 'type': 'group', 'expanded': False, 'children': [
-            {'title': 'Display:', 'name': 'display', 'type': 'bool', 'value': name in setup.displayed},
+            {'title': 'Display:', 'name': 'display', 'type': 'bool', 'value': name in setup.displayed,
+             'tip': 'Shown in the main view (a paired actuator or one with extra keys is always shown)'},
+            {'title': 'Continuous:', 'name': 'continuous', 'type': 'bool', 'value': setup.is_continuous(name),
+             'tip': CONTINUOUS_TIP},
             {'title': 'Step:', 'name': 'step', 'type': 'float', 'value': setup.step(name), 'min': 1e-12,
              'suffix': units.get(name, ''), 'decimals': 6},
+            {'title': 'Pair:', 'name': 'pair', 'type': 'list', 'limits': list(PAIR_CHOICES),
+             'value': number_label(number) if number else AUTO, 'tip': PAIR_TIP},
+            {'title': 'Keys:', 'name': 'axis', 'type': 'list', 'limits': list(AXES), 'value': setup.axis(name),
+             'tip': AXIS_TIP},
         ]})
 
 
-def actuator_group(settings: Parameter, name: str):
+def actuator_group(settings: Parameter, name: str) -> Optional[Parameter]:
     for child in settings.child('actuators').children():
         if child.title() == name:
             return child
     return None
 
 
-# ---------------------------------------------------------------------------------------------- bindings
-def binding_groups(settings: Parameter) -> List[Parameter]:
-    return [c for c in settings.child('bindings').children() if c.name().startswith('b') and c.type() == 'group']
+def set_actuator_value(settings: Parameter, name: str, child: str, value) -> bool:
+    """Set one setting of an actuator, True if it changed"""
+    group = actuator_group(settings, name)
+    if group is None or group.child(child).value() == value:
+        return False
+    group.child(child).setValue(value)
+    return True
 
 
-def _next_binding_name(settings: Parameter) -> str:
-    used = {c.name() for c in settings.child('bindings').children()}
+def set_step_value(settings: Parameter, name: str, value: float):
+    set_actuator_value(settings, name, 'step', value)
+
+
+# ---------------------------------------------------------------------------------------------- extra keys
+def extra_groups(settings: Parameter) -> List[Parameter]:
+    return [c for c in settings.child('extra').children() if c.type() == 'group']
+
+
+def _next_extra_name(settings: Parameter) -> str:
+    used = {c.name() for c in settings.child('extra').children()}
     i = 0
-    while f'b{i:02d}' in used:
+    while f'x{i:02d}' in used:
         i += 1
-    return f'b{i:02d}'
+    return f'x{i:02d}'
 
 
-def add_binding(settings: Parameter, binding: Binding, names: Sequence[str],
-                on_remove: Callable[[Parameter], None] = None) -> Parameter:
-    limits = [''] + list(names)
-    children = [{'title': 'Kind', 'name': 'kind', 'type': 'str', 'value': binding.kind, 'visible': False}]
-    if binding.kind == PAIR:
-        children.append({'title': 'Name:', 'name': 'name', 'type': 'str', 'value': binding.name})
-    labels = ('First (A/D, Left/Right)', 'Second (S/W, Down/Up)') if binding.kind == PAIR else ('Actuator',)
-    for j, axis in enumerate(binding.axes):
-        actuator = axis.actuator if axis.actuator in names else ''
-        children.append({'title': f'{labels[j]}:', 'name': f'act{j}', 'type': 'list', 'limits': limits,
-                         'value': actuator})
-        if binding.kind == SINGLE:
-            children += [
-                {'title': '  key -:', 'name': f'minus{j}', 'type': 'str', 'value': axis.key_minus, 'tip': KEY_TIP},
-                {'title': '  key +:', 'name': f'plus{j}', 'type': 'str', 'value': axis.key_plus, 'tip': KEY_TIP},
-            ]
-    children.append({'title': 'Remove', 'name': 'remove', 'type': 'action'})
-    count = sum(1 for g in binding_groups(settings) if g.child('kind').value() == binding.kind) + 1
-    title = (f'Pair: {binding.title()}' if binding.kind == PAIR and any(binding.actuators()) or binding.name
-             else f"{'Pair' if binding.kind == PAIR else 'Extra keys'} {count}")
-    group = settings.child('bindings').addChild({
-        'title': title, 'name': _next_binding_name(settings), 'type': 'group', 'children': children})
+def add_extra_keys(settings: Parameter, extra: ExtraKeys, names: Sequence[str],
+                   on_remove: Callable[[Parameter], None] = None) -> Parameter:
+    actuator = extra.actuator if extra.actuator in names else ''
+    group = settings.child('extra').addChild({
+        'title': f'Extra keys {len(extra_groups(settings)) + 1}', 'name': _next_extra_name(settings), 'type': 'group',
+        'children': [
+            {'title': 'Actuator:', 'name': 'actuator', 'type': 'list', 'limits': [''] + list(names),
+             'value': actuator},
+            {'title': 'Key -:', 'name': 'minus', 'type': 'str', 'value': extra.key_minus, 'tip': KEY_TIP},
+            {'title': 'Key +:', 'name': 'plus', 'type': 'str', 'value': extra.key_plus, 'tip': KEY_TIP},
+            {'title': 'Remove', 'name': 'remove', 'type': 'action'},
+        ]})
     if on_remove is not None:
         group.child('remove').sigActivated.connect(lambda *_: on_remove(group))
     return group
 
 
-def set_bindings(settings: Parameter, bindings: Sequence[Binding], names: Sequence[str],
-                 on_remove: Callable[[Parameter], None] = None):
-    for group in binding_groups(settings):
+def set_extra_keys(settings: Parameter, extra_keys: Sequence[ExtraKeys], names: Sequence[str],
+                   on_remove: Callable[[Parameter], None] = None):
+    for group in extra_groups(settings):
         group.remove()
-    for binding in bindings:
-        add_binding(settings, binding, names, on_remove)
-
-
-def pair_group(settings: Parameter, actuators: Sequence[str]):
-    """The settings group of the pair of these two actuators (in this order), None if not found"""
-    for group in binding_groups(settings):
-        if group.child('kind').value() == PAIR and \
-                [group.child('act0').value(), group.child('act1').value()] == list(actuators):
-            return group
-    return None
+    for extra in extra_keys:
+        add_extra_keys(settings, extra, names, on_remove)
 
 
 def set_problems(settings: Parameter, problems: Sequence[str]):
-    param = settings.child('bindings', 'problems')
+    param = settings.child('problems')
     param.setValue('\n'.join(problems))
     param.setOpts(visible=bool(problems))
 
 
 # ---------------------------------------------------------------------------------------------- setup <-> tree
 def read_setup(settings: Parameter) -> JogSetup:
+    """The setup described by the tree (pair names are not in the tree: the caller adds them)"""
     general = settings.child('general')
     setup = JogSetup(**{name: general.child(name).value() for name in GENERAL_NAMES})
     for group in settings.child('actuators').children():
+        name = group.title()
         if group.child('display').value():
-            setup.displayed.append(group.title())
-        setup.steps[group.title()] = float(group.child('step').value())
-    for group in binding_groups(settings):
-        if group.child('kind').value() == PAIR:
-            setup.bindings.append(Binding.pair(group.child('act0').value() or '', group.child('act1').value() or '',
-                                               (group.child('name').value() or '').strip()))
-        else:
-            setup.bindings.append(Binding.single(group.child('act0').value() or '',
-                                                 normalize_key_name(group.child('minus0').value()),
-                                                 normalize_key_name(group.child('plus0').value())))
+            setup.displayed.append(name)
+        if group.child('continuous').value():
+            setup.continuous.append(name)
+        setup.steps[name] = float(group.child('step').value())
+        number = number_of(group.child('pair').value())
+        if number is not None:
+            setup.pair_numbers[name] = number
+        setup.axes[name] = group.child('axis').value()
+    for group in extra_groups(settings):
+        setup.extra_keys.append(ExtraKeys(group.child('actuator').value() or '',
+                                          normalize_key_name(group.child('minus').value()),
+                                          normalize_key_name(group.child('plus').value())))
     return setup
 
 
@@ -171,13 +179,7 @@ def write_setup(settings: Parameter, setup: JogSetup, names: Sequence[str], unit
     for name in GENERAL_NAMES:
         general.child(name).setValue(getattr(setup, name))
     fill_actuators(settings, names, units, setup)
-    set_bindings(settings, setup.bindings, names, on_remove)
-
-
-def set_step_value(settings: Parameter, name: str, value: float):
-    group = actuator_group(settings, name)
-    if group is not None and group.child('step').value() != value:
-        group.child('step').setValue(value)
+    set_extra_keys(settings, setup.extra_keys, names, on_remove)
 
 
 def set_saved_setups(settings: Parameter, names: Sequence[str], current: str = ''):

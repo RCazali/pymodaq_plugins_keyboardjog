@@ -88,6 +88,11 @@ class FakePort(ActuatorPort):
         self.moving = True
         self._target = self.position + delta
 
+    def move_abs(self, value):
+        self.moves.append(('abs', value))
+        self.moving = True
+        self._target = value
+
     def stop(self):
         self.stops += 1
 

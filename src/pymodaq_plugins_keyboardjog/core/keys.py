@@ -38,8 +38,8 @@ MODIFIER_KEYS = frozenset(key_int(k) for k in (Qt.Key_Shift, Qt.Key_Control, Qt.
 
 ARROW_CODES = frozenset((KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN))
 
-#: digit keys selecting the group 1..9 (top row and keypad give the same key code)
-DIGIT_KEYS = {key_int(getattr(Qt, f'Key_{n}')): n for n in range(1, 10)}
+#: digit keys selecting the group 1..9, and 10 for the 0 key (top row and keypad give the same key code)
+DIGIT_KEYS = {key_int(getattr(Qt, f'Key_{n}')): n or 10 for n in range(10)}
 
 #: keys that cannot be given to an extra binding: the arrows and digits (selected group), the step size keys,
 #: the modifiers, and Tab (focus navigation of Qt)
@@ -121,19 +121,19 @@ def movement_labels(move_keys: str, azerty: bool = None) -> Dict[str, str]:
 
 
 def digit_of(key: int, native_scan_code: int = 0, platform: str = sys.platform) -> Optional[int]:
-    """Group number 1..9 of a key event, None if it is not a digit key
+    """Group number of a key event (1..9, 10 for the 0 key), None if it is not a digit key
 
     The digit key code is used when the layout gives it (QWERTY, QWERTZ, keypad, Shift + top row on AZERTY). For the
-    unshifted top row of the AZERTY layout (& é " ' ( - è _ ç) the physical key position (native scan code) is used
+    unshifted top row of the AZERTY layout (& é " ' ( - è _ ç à) the physical key position (native scan code) is used
     on Windows and Linux, except for keys the extension already uses (the '-' of the 6 key stays the step key).
     """
     if key in DIGIT_KEYS:
         return DIGIT_KEYS[key]
     if key in STEP_UP_KEYS or key in STEP_DOWN_KEYS or key in MODIFIER_KEYS:
         return None
-    if platform == 'win32' and 2 <= native_scan_code <= 10:       # top row 1..9 (set 1 scan codes)
+    if platform == 'win32' and 2 <= native_scan_code <= 11:       # top row 1..9, 0 (set 1 scan codes)
         return native_scan_code - 1
-    if platform.startswith('linux') and 10 <= native_scan_code <= 18:   # X11 / evdev key codes + 8
+    if platform.startswith('linux') and 10 <= native_scan_code <= 19:   # X11 / evdev key codes + 8
         return native_scan_code - 9
     return None
 

@@ -5,22 +5,27 @@ the keyboard while showing their position. Works without any configuration:
 
 * Green border: the window has the keyboard focus, the keys move the actuators.
   Red border: the focus is elsewhere, every key is ignored (and the actuators it was moving are stopped).
-* Every actuator has a number: keys 1..9 (or a click on its row) select it, the movement keys (W A S D by their
-  position, or the arrows) move the selection. Two actuators can be paired with a right-click on a row (one number
-  and a name: A/D move the first, S/W the second), and an actuator can get extra keys of its own (e.g. PgDown /
-  PgUp) in the settings, active whatever the selection.
+* Every actuator has a number: keys 1..9, 0 (or a click on its row) select it, the movement keys (W A S D by their
+  position, or the arrows) move the selection. Each actuator has its settings (also in its right-click menu):
+  displayed, continuous, step, pair number and keys (horizontal: A / D, vertical: S / W). Two actuators with the
+  same pair number are selected and moved together (e.g. the X and Y of a stage). An actuator can also get extra
+  keys of its own (e.g. PgDown / PgUp), active whatever the selection.
 * Step mode (default): one key press = one relative step. Continuous mode: steps repeated while the key is held,
   each one after the previous move is done (never queued); Shift = step x10, Ctrl = step /10 while held.
 * ``+`` / ``-``: multiply / divide the step of the selection by the step factor (10 by default).
-* Setups (displayed actuators, pairs, extra keys, steps, options) are saved / loaded by name from the settings.
+* The graph button shows the history of the moves of the selected group (end-of-move points, click one to go back
+  there), hidden by default.
+* Setups (all the settings) are saved / loaded by name from the settings.
 
-All the motion goes through the DAQ_Move modules of the Dashboard (``move_rel``, ``stop_motion``, their signals),
-see ``core/ports.py``.
+All the motion goes through the DAQ_Move modules of the Dashboard (``move_rel``, ``move_abs``, ``stop_motion``,
+their signals), see ``core/ports.py``.
 
 Compatibility: PyMoDAQ 5.1.x (tested on 5.1.10, PyQt5) and 5.3.x (tested on 5.3.4, PyQt6).
 """
 from __future__ import annotations
 
+import math
+import time
 from typing import Dict, List, Optional
 
 from qtpy import QtCore, QtWidgets
@@ -32,14 +37,17 @@ from pymodaq.extensions.utils import CustomExt  # still valid in 5.3 (pymodaq.ut
 
 from pymodaq_plugins_keyboardjog.utils import Config as PluginConfig
 from pymodaq_plugins_keyboardjog.core.controller import MotionController
+from pymodaq_plugins_keyboardjog.core.history import HISTORY_FILE, MoveHistory
 from pymodaq_plugins_keyboardjog.core.input import KeyboardInput
 from pymodaq_plugins_keyboardjog.core.keys import (DOWN, LEFT, RIGHT, UP, is_azerty, key_label, key_name,
                                                     movement_labels, movement_reserved_keys, normalize_key_name)
-from pymodaq_plugins_keyboardjog.core.model import (CONTINUOUS_MODE, Binding, Group, JogSetup, build_groups,
-                                                     build_keymap, direction_map)
+from pymodaq_plugins_keyboardjog.core.model import (AUTO, GROUP_NUMBERS, HORIZONTAL, PAIR_CHOICES, VERTICAL,
+                                                     ExtraKeys, Group, JogSetup, build_groups, build_keymap,
+                                                     direction_map, number_label)
 from pymodaq_plugins_keyboardjog.core.ports import ActuatorPort, actuator_modules, make_ports
 from pymodaq_plugins_keyboardjog.core.setups import SetupStore, clean_name, default_folder
 from pymodaq_plugins_keyboardjog.ui import settings as ui_settings
+from pymodaq_plugins_keyboardjog.ui.history_plot import HistoryPlot
 from pymodaq_plugins_keyboardjog.ui.panel import JogPanel, RowInfo
 
 logger = set_logger(get_module_name(__file__))
@@ -51,13 +59,23 @@ CLASS_NAME = 'KeyboardJog'
 Qt = QtCore.Qt
 
 HELP = ('Click this window: green border = the keys move the actuators, red = keys ignored.\n'
-        '1-9 or a click on a row: select an actuator (or a pair). W A S D (or the arrows, see the settings): move\n'
-        'the selection (pair: A/D the first actuator, S/W the second one). Right-click a row: pair / rename / unpair.\n'
+        '1-9, 0 or a click on a row: select an actuator (or a pair). W A S D (or the arrows, see the settings): move\n'
+        'the selection (A/D the horizontal actuator, S/W the vertical one).\n'
+        'Right-click a row: pair, keys, continuous mode. Settings: the same for each actuator, extra keys, setups.\n'
         '+ / - : multiply / divide the step of the selection. Continuous mode: Shift = step x10, Ctrl = step /10.\n'
-        'Settings: pairs, extra keys, steps, displayed actuators, setups.')
+        'Graph button: history of the moves of the selection (click a point to go back there).')
 
 COMPACT_SIZE = QtCore.QSize(330, 120)
 SETTINGS_SIZE = QtCore.QSize(420, 640)
+HISTORY_SIZE = QtCore.QSize(380, 400)
+HISTORY_SAVE_MS = 1500
+
+
+def step_decimals(step: float) -> int:
+    """Decimals showing one step with two more digits"""
+    if step is None or step <= 0:
+        return 4
+    return min(max(0, 2 - int(math.floor(math.log10(step)))), 9)
 
 
 class KeyboardJog(CustomExt):
@@ -71,7 +89,9 @@ class KeyboardJog(CustomExt):
         self._loading = True
         self._closing = False
         super().__init__(parent, dashboard)
-        self.store = SetupStore(default_folder(plugin_config))
+        folder = default_folder(plugin_config)
+        self.store = SetupStore(folder)
+        self.history = MoveHistory(folder.parent / HISTORY_FILE)
         self.keyboard = KeyboardInput(self)
         self.controller = MotionController(parent=self)
         self.controller.connect_source(self.keyboard)
@@ -79,18 +99,25 @@ class KeyboardJog(CustomExt):
         self.values: Dict[str, Optional[float]] = {}
         self.setup = JogSetup()
         self.setup_name = ''
+        self.pair_names: Dict[int, str] = {}    # not in the settings tree: edited from the right-click menu
         self.groups: List[Group] = []
         self.selected = 0                       # index of the selected group
-        self._extra_keys: Dict[str, List[str]] = {}
+        self._extra_labels: Dict[str, List[str]] = {}
         self._azerty = is_azerty()              # labels of the WASD keys only (they are matched by position)
         self._labels = movement_labels(self.setup.move_keys, self._azerty)
         self._dirty = False
         self._auto_display = True               # no setup yet: every actuator is displayed
         self.panel = JogPanel(self.keyboard)
         self.panel.setToolTip(HELP)
+        self.history_plot = HistoryPlot()
+        self.panel.set_history_widget(self.history_plot)
         self._message_timer = QtCore.QTimer(self)
         self._message_timer.setSingleShot(True)
         self._message_timer.timeout.connect(lambda: self.panel.show_message(''))
+        self._history_timer = QtCore.QTimer(self)
+        self._history_timer.setSingleShot(True)
+        self._history_timer.setInterval(HISTORY_SAVE_MS)
+        self._history_timer.timeout.connect(self.history.save)
 
         self.setup_ui()
 
@@ -142,16 +169,22 @@ class KeyboardJog(CustomExt):
     def connect_things(self):
         self.panel.armed_changed.connect(self._on_armed_changed)
         self.panel.settings_toggled.connect(self._on_settings_toggled)
+        self.panel.history_toggled.connect(self._on_history_toggled)
         self.panel.always_on_top_toggled.connect(self._on_top_checkbox)
         self.keyboard.step_scale_requested.connect(self.scale_steps)
-        self.keyboard.select_requested.connect(lambda number: self.select_group(number - 1))
+        self.keyboard.select_requested.connect(self.select_number)
+        self.keyboard.multiplier_changed.connect(self._on_multiplier)
         self.panel.group_clicked.connect(self.select_group)
         self.panel.context_requested.connect(self._show_group_menu)
         self.controller.step_changed.connect(self._on_step_changed)
         self.controller.message.connect(lambda text: self.show_message(text, warning=True))
+        self.controller.move_started.connect(lambda name: self.panel.set_busy(name, True))
+        self.controller.move_finished.connect(self._on_move_finished)
+        self.history_plot.point_clicked.connect(self.go_back)
+        self.history_plot.clear_requested.connect(self.clear_history)
         actions = {('setup', 'load'): self._load_selected, ('setup', 'save'): self.save_setup,
                    ('setup', 'save_as'): self._save_as, ('setup', 'delete'): self._delete_selected,
-                   ('bindings', 'add_pair'): self._add_pair, ('bindings', 'add_single'): self._add_single}
+                   ('extra', 'add'): self._add_extra_keys}
         for path, slot in actions.items():
             self.settings.child(*path).sigActivated.connect(lambda *_, s=slot: s())
 
@@ -159,11 +192,11 @@ class KeyboardJog(CustomExt):
         if self._loading or self.panel is None:
             return
         path = self.settings.childPath(param) or []
-        if not path or path[0] == 'setup':
+        if not path or path[0] in ('setup', 'problems'):
             return
         if path[0] == 'actuators' and param.name() == 'display':
             self._auto_display = False
-        if path[0] == 'bindings' and param.name().startswith(('minus', 'plus')):
+        if path[0] == 'extra' and param.name() in ('minus', 'plus'):
             normalized = normalize_key_name(param.value())
             if normalized != param.value():
                 self._loading = True
@@ -199,7 +232,7 @@ class KeyboardJog(CustomExt):
         current = [getattr(p, 'module', None) for p in self.ports.values()]
         if not force and [id(m) for m in modules] == [id(m) for m in current]:
             return
-        setup = ui_settings.read_setup(self.settings) if not force else self.setup
+        setup = self._read_setup() if not force else self.setup
         for port in self.ports.values():
             port.disconnect()
         self.ports = make_ports(modules)
@@ -225,21 +258,31 @@ class KeyboardJog(CustomExt):
         if value is None:
             return
         self.values[name] = value
+        self.history.set_settled(name, value)
         self.panel.set_value(name, value)
+        group = self.selected_group_object()
+        if group is not None and name in group.moved and self.panel.history_visible():
+            self.history_plot.update_live(self._live_point(group))
 
     # ---------------------------------------------------------------- settings -> controller / view
+    def _read_setup(self) -> JogSetup:
+        setup = ui_settings.read_setup(self.settings)
+        setup.pair_names = dict(self.pair_names)
+        return setup
+
     def _write_tree(self, setup: JogSetup):
+        self.pair_names = dict(setup.pair_names)
         self._loading = True
         try:
-            ui_settings.write_setup(self.settings, setup, list(self.ports), self.units(), self._remove_binding)
+            ui_settings.write_setup(self.settings, setup, list(self.ports), self.units(), self._remove_extra_keys)
         finally:
             self._loading = False
 
     def apply_settings(self):
         """Read the settings tree and apply it: controller, key map, main view, window"""
-        setup = ui_settings.read_setup(self.settings)
+        setup = self._read_setup()
         self.setup = setup
-        self.controller.mode = setup.motion_mode
+        self.controller.continuous = [n for n in setup.continuous if n in self.ports]
         self.controller.min_interval_s = setup.min_interval_ms / 1000
         self.controller.move_timeout_s = setup.move_timeout_s
         for name in self.ports:
@@ -255,54 +298,66 @@ class KeyboardJog(CustomExt):
         finally:
             self._loading = False
 
-        self._extra_keys: Dict[str, List[str]] = {}
+        self._extra_labels = {}
         for key, action in keymap.items():
-            self._extra_keys.setdefault(action.actuator, ['', ''])[0 if action.direction < 0 else 1] = \
+            self._extra_labels.setdefault(action.actuator, ['', ''])[0 if action.direction < 0 else 1] = \
                 key_label(key_name(key))
         units = self.units()
         rows = []
         for index, group in enumerate(self.groups):
-            number = str(index + 1) if index < 9 else ''
             if group.is_pair:
-                rows.append(RowInfo(group.name, index, number=number))
+                rows.append(RowInfo(group.title, index, number=group.label))
                 rows += [RowInfo(name, index, units.get(name, ''), actuator=name, indent=True)
                          for name in group.actuators]
             else:
                 name = group.actuators[0]
-                rows.append(RowInfo(name, index, units.get(name, ''), number, actuator=name))
+                rows.append(RowInfo(name, index, units.get(name, ''), group.label, actuator=name))
         self.panel.set_rows(rows)
         for row in rows:
             if not row.is_header:
                 self.panel.set_value(row.actuator, self.values.get(row.actuator))
-                self.panel.set_step(row.actuator, self.controller.step(row.actuator))
-        self.panel.set_mode_text('continuous' if setup.motion_mode == CONTINUOUS_MODE else 'step')
+                self.panel.set_step(row.actuator, self.controller.step(row.actuator),
+                                    self.controller.is_continuous(row.actuator))
+                self.panel.set_busy(row.actuator, self.controller.is_busy(row.actuator))
         self._labels = movement_labels(setup.move_keys, self._azerty)
         self.panel.set_hint(' '.join(self._labels[d] for d in (UP, LEFT, DOWN, RIGHT)))
         self.selected = next((i for i, g in enumerate(self.groups)
-                              if selected_before and g.actuators[0] in selected_before), 0)
+                              if any(a in selected_before for a in g.actuators)), 0)
         self._apply_selection()
         self.panel.on_top_check.blockSignals(True)
         self.panel.on_top_check.setChecked(setup.always_on_top)
         self.panel.on_top_check.blockSignals(False)
         self.apply_always_on_top(setup.always_on_top)
+        self.panel.show_history(setup.show_history)
         if problems:
             self.show_message('Problems in the pairs / extra keys: see the settings', warning=True)
 
     # ---------------------------------------------------------------- selection
+    def selected_group_object(self) -> Optional[Group]:
+        if 0 <= self.selected < len(self.groups):
+            return self.groups[self.selected]
+        return None
+
     def selected_group(self) -> List[str]:
         """Actuators of the selected group"""
-        if 0 <= self.selected < len(self.groups):
-            return list(self.groups[self.selected].actuators)
-        return []
+        group = self.selected_group_object()
+        return list(group.actuators) if group is not None else []
 
     def select_group(self, index: int):
-        """Select the group of this index (0 = number 1): the movement keys and +/- act on it"""
+        """Select the group of this index in the main view: the movement keys and +/- act on it"""
         if not 0 <= index < len(self.groups):
-            self.show_message(f'No actuator number {index + 1}')
             return
         if index != self.selected:
             self.selected = index
             self._apply_selection()
+
+    def select_number(self, number: int):
+        """Select the group of this number (key 1..9, 10 for the 0 key)"""
+        for index, group in enumerate(self.groups):
+            if group.number == number:
+                self.select_group(index)
+                return
+        self.show_message(f'No actuator number {number_label(number)}')
 
     def select_actuator(self, name: str):
         for index, group in enumerate(self.groups):
@@ -311,83 +366,126 @@ class KeyboardJog(CustomExt):
                 return
 
     def _apply_selection(self):
-        group = self.groups[self.selected] if 0 <= self.selected < len(self.groups) else None
+        group = self.selected_group_object()
         self.keyboard.set_direction_map(direction_map(group, self.selected), self.setup.move_keys)
         self.panel.set_selected(self.selected)
         k = self._labels
         for g in self.groups:
-            for j, name in enumerate(g.actuators):
+            for name in g.actuators:
                 parts = []
-                if g is group:
-                    if not g.is_pair:
-                        parts.append(f'{k[LEFT]}/{k[RIGHT]} {k[DOWN]}/{k[UP]}')
-                    else:
-                        parts.append(f'{k[LEFT]}/{k[RIGHT]}' if j == 0 else f'{k[DOWN]}/{k[UP]}')
-                if name in self._extra_keys:
-                    parts.append('/'.join(x or '–' for x in self._extra_keys[name]))
+                if g is group and name == g.horizontal:
+                    parts.append(f'{k[LEFT]}/{k[RIGHT]}')
+                elif g is group and name == g.vertical:
+                    parts.append(f'{k[DOWN]}/{k[UP]}')
+                if name in self._extra_labels:
+                    parts.append('/'.join(x or '–' for x in self._extra_labels[name]))
                 self.panel.set_keys(name, '  '.join(parts))
+        self._refresh_history_view(refit=True)
 
-    # ---------------------------------------------------------------- pairs from the main view
+    # ---------------------------------------------------------------- per-actuator settings from the main view
     def _show_group_menu(self, index: int, actuator: str, global_pos: QtCore.QPoint):
         menu = self.group_menu(index, actuator)
         if menu is not None and not menu.isEmpty():
             menu.exec(global_pos) if hasattr(menu, 'exec') else menu.exec_(global_pos)
+        self.panel.setFocus(Qt.OtherFocusReason)
 
     def group_menu(self, index: int, actuator: str = '') -> Optional[QtWidgets.QMenu]:
-        """Right-click menu of a row: pair a single actuator with another one, rename / unpair a pair"""
+        """Right-click menu of a row: the settings of the actuator (pair, keys, continuous), rename / unpair a pair"""
         if not 0 <= index < len(self.groups):
             return None
         group = self.groups[index]
         menu = QtWidgets.QMenu(self.panel)
-        if group.is_pair:
-            menu.addAction(f"Rename '{group.name}'…", lambda: self.rename_pair(index))
-            menu.addAction('Unpair', lambda: self.unpair(index))
-        else:
-            name = group.actuators[0]
+        if actuator:
             others = [g.actuators[0] for g in self.groups if not g.is_pair and g is not group]
-            sub = menu.addMenu(f"Pair '{name}' with")
-            sub.setEnabled(bool(others))
+            sub = menu.addMenu(f"Pair '{actuator}' with")
+            sub.setEnabled(bool(others) and not group.is_pair)
             for other in others:
-                sub.addAction(other, lambda o=other: self.pair_actuators(name, o))
+                sub.addAction(other, lambda o=other: self.pair_actuators(actuator, o))
+            sub = menu.addMenu('Pair number')
+            current = number_label(self.setup.number(actuator)) or AUTO
+            for choice in PAIR_CHOICES:
+                action = sub.addAction(choice, lambda c=choice: self.set_actuator_setting(actuator, 'pair', c))
+                action.setCheckable(True)
+                action.setChecked(choice == current)
+            sub = menu.addMenu('Keys')
+            k = self._labels
+            for axis, keys in ((HORIZONTAL, f'{k[LEFT]}/{k[RIGHT]}'), (VERTICAL, f'{k[DOWN]}/{k[UP]}')):
+                action = sub.addAction(f'{axis} ({keys})',
+                                       lambda a=axis: self.set_actuator_setting(actuator, 'axis', a))
+                action.setCheckable(True)
+                action.setChecked(self.setup.axis(actuator) == axis)
+            action = menu.addAction('Continuous', lambda: self.set_actuator_setting(
+                actuator, 'continuous', not self.setup.is_continuous(actuator)))
+            action.setCheckable(True)
+            action.setChecked(self.setup.is_continuous(actuator))
+        if group.is_pair:
+            menu.addSeparator()
+            menu.addAction(f"Rename '{group.title}'…", lambda: self.rename_pair(index))
+            menu.addAction('Unpair', lambda: self.unpair(index))
         return menu
+
+    def set_actuator_setting(self, name: str, setting: str, value):
+        """Change one setting of an actuator (display, continuous, step, pair, axis) and apply it"""
+        self._set_actuator_settings({name: {setting: value}})
+
+    def _set_actuator_settings(self, changes: Dict[str, Dict[str, object]]):
+        changed = False
+        self._loading = True
+        try:
+            for name, values in changes.items():
+                for setting, value in values.items():
+                    changed = ui_settings.set_actuator_value(self.settings, name, setting, value) or changed
+        finally:
+            self._loading = False
+        if changed:
+            self.apply_settings()
+            self._set_dirty(True)
 
     def _ask_name(self, title: str, default: str) -> Optional[str]:
         text, ok = QtWidgets.QInputDialog.getText(self.mainwindow, title, 'Name of the pair:', text=default)
         return text.strip() if ok else None
 
     def pair_actuators(self, first: str, second: str, name: Optional[str] = None):
-        """Pair two actuators (first: horizontal keys, second: vertical keys) and select the new pair"""
+        """Pair two actuators (first: horizontal keys, second: vertical keys) and select the new pair. The pair takes
+        the number of the first actuator, or the first free one"""
+        taken = {n for a, n in self.setup.pair_numbers.items() if a not in (first, second)}
+        group = next((g for g in self.groups if first in g), None)
+        number = group.number if group is not None and group.number not in taken else None
+        if number is None:
+            number = next((n for n in GROUP_NUMBERS if n not in taken), None)
+        if number is None:
+            self.show_message('No free pair number: unpair a pair first', warning=True)
+            return
+        if name is not None:
+            self.pair_names[number] = name.strip()
+        else:
+            self.pair_names.pop(number, None)
+        label = number_label(number)
+        self._set_actuator_settings({first: {'pair': label, 'axis': HORIZONTAL},
+                                     second: {'pair': label, 'axis': VERTICAL}})
+        self.select_actuator(first)
+
+    def rename_pair(self, index: int, name: Optional[str] = None):
+        if not 0 <= index < len(self.groups) or not self.groups[index].is_pair:
+            return
+        group = self.groups[index]
+        if group.number is None:
+            return
         if name is None:
-            name = self._ask_name('New pair', f'{first} / {second}')
+            name = self._ask_name('Rename pair', group.title)
             if name is None:
                 return
-        ui_settings.add_binding(self.settings, Binding.pair(first, second, name), list(self.ports),
-                                self._remove_binding)
+        self.pair_names[group.number] = name.strip()
         self.apply_settings()
-        self.select_actuator(first)
         self._set_dirty(True)
         self.panel.setFocus(Qt.OtherFocusReason)
 
-    def _pair_param(self, index: int):
-        if not 0 <= index < len(self.groups) or not self.groups[index].is_pair:
-            return None
-        return ui_settings.pair_group(self.settings, self.groups[index].actuators)
-
-    def rename_pair(self, index: int, name: Optional[str] = None):
-        param = self._pair_param(index)
-        if param is None:
-            return
-        if name is None:
-            name = self._ask_name('Rename pair', self.groups[index].name)
-            if name is None:
-                return
-        param.child('name').setValue(name)          # value_changed applies it
-        self.panel.setFocus(Qt.OtherFocusReason)
-
     def unpair(self, index: int):
-        param = self._pair_param(index)
-        if param is not None:
-            self._remove_binding(param)
+        if not 0 <= index < len(self.groups) or not self.groups[index].is_pair:
+            return
+        group = self.groups[index]
+        self.pair_names.pop(group.number, None)
+        self._set_actuator_settings({name: {'pair': AUTO} for name in group.actuators})
 
     def _on_step_changed(self, name: str, value: float):
         self.panel.set_step(name, value)
@@ -398,11 +496,19 @@ class KeyboardJog(CustomExt):
         finally:
             self._loading = False
         self._set_dirty(True)
+        group = self.selected_group_object()
+        if group is not None and name in group.moved:
+            self._refresh_history_view()
 
     def scale_steps(self, sign: int):
         """'+' (sign > 0) / '-' (sign < 0): scale the steps of the selected group"""
         names = [n for n in self.selected_group() if n in self.ports]
         self.controller.scale_steps(sign, self.setup.step_factor, names)
+
+    def _on_multiplier(self, value: float):
+        """Shift / Ctrl held: shown, used by the actuators in continuous mode"""
+        text = 'x10' if value > 1 else '/10' if value < 1 else ''
+        self.panel.set_mode_text(f'step {text}' if text else '')
 
     def show_message(self, text: str, warning: bool = False, duration_ms: int = 4000):
         self.panel.show_message(text, warning)
@@ -411,21 +517,92 @@ class KeyboardJog(CustomExt):
         else:
             self._message_timer.stop()
 
-    # ---------------------------------------------------------------- bindings
-    def _add_pair(self):
-        ui_settings.add_binding(self.settings, Binding.pair(), list(self.ports), self._remove_binding)
+    # ---------------------------------------------------------------- extra keys
+    def _add_extra_keys(self):
+        ui_settings.add_extra_keys(self.settings, ExtraKeys(), list(self.ports), self._remove_extra_keys)
         self.apply_settings()
         self._set_dirty(True)
 
-    def _add_single(self):
-        ui_settings.add_binding(self.settings, Binding.single(), list(self.ports), self._remove_binding)
-        self.apply_settings()
-        self._set_dirty(True)
-
-    def _remove_binding(self, group):
+    def _remove_extra_keys(self, group):
         group.remove()
         self.apply_settings()
         self._set_dirty(True)
+
+    # ---------------------------------------------------------------- history
+    def _history_groups(self) -> List[List[str]]:
+        return [g.moved for g in self.groups if g.moved]
+
+    def _live_point(self, group: Group) -> List[Optional[float]]:
+        return [self.values.get(a) for a in group.moved]
+
+    def _on_move_finished(self, name: str, value):
+        self.panel.set_busy(name, False)
+        if value is None:
+            return
+        changed = self.history.record(name, value, self._history_groups())
+        if changed:
+            self._history_timer.start()
+            group = self.selected_group_object()
+            if group is not None and '|'.join(group.moved) in changed:
+                self._refresh_history_view()
+
+    def _on_history_toggled(self, shown: bool):
+        if self.settings['general', 'show_history'] != shown:
+            self.settings.child('general', 'show_history').setValue(shown)   # value_changed applies it
+        self._refresh_history_view(refit=True)
+        for delay_ms in (0, 50):
+            QtCore.QTimer.singleShot(delay_ms, self._fit_window)
+
+    def _refresh_history_view(self, refit: bool = False):
+        if self.panel is None or not self.panel.history_visible():
+            return
+        group = self.selected_group_object()
+        if group is None or not group.moved:
+            self.history_plot.set_group('—', None, [], [], [])
+            self.history_plot.set_points([], None)
+            return
+        moved = group.moved
+        if len(moved) == 2:
+            orient = '2d'
+        else:
+            orient = 'h' if moved[0] == group.horizontal else 'v'
+        units = [self.ports[a].units() if a in self.ports else '' for a in moved]
+        decimals = [step_decimals(self.controller.step(a)) for a in moved]
+        self.history_plot.set_group(group.title, orient, moved, units, decimals)
+        self.history_plot.set_points(self.history.points(moved), self._live_point(group))
+        if refit:
+            self.history_plot.fit()
+
+    def go_back(self, index: int, confirm: bool = True) -> bool:
+        """Move the selected group back to the point ``index`` of its history (after confirmation)"""
+        group = self.selected_group_object()
+        if group is None:
+            return False
+        points = self.history.points(group.moved)
+        if not 0 <= index < len(points):
+            return False
+        point = points[index]
+        text = '\n'.join(f'{a} → {v:.{step_decimals(self.controller.step(a))}f} {self.ports[a].units()}'.rstrip()
+                         for a, v in zip(group.moved, point[1:]) if a in self.ports)
+        when = time.strftime('%d/%m %H:%M:%S', time.localtime(point[0])) if point[0] else '?'
+        self.controller.release_all(stop=False)
+        ok = not confirm or self._ask('Go back', f"Move {group.title} back to point #{index} ({when})?\n\n{text}")
+        if ok:
+            for actuator, value in zip(group.moved, point[1:]):
+                self.controller.move_to(actuator, value)
+        self.panel.setFocus(Qt.OtherFocusReason)
+        return ok
+
+    def clear_history(self, confirm: bool = True):
+        group = self.selected_group_object()
+        if group is None or not self.history.points(group.moved):
+            return
+        n = len(self.history.points(group.moved))
+        if not confirm or self._ask('Clear history', f'Clear the {n} recorded positions of {group.title}?'):
+            self.history.clear(group.moved)
+            self.history.save()
+            self._refresh_history_view(refit=True)
+        self.panel.setFocus(Qt.OtherFocusReason)
 
     # ---------------------------------------------------------------- setups
     def _set_dirty(self, dirty: bool):
@@ -457,7 +634,7 @@ class KeyboardJog(CustomExt):
             logger.warning(f"last setup '{name}' not loaded: {e}")
             self._set_dirty(False)
             return
-        used = set(setup.displayed) | set(setup.bound_actuators())
+        used = set(setup.displayed) | set(setup.pair_numbers) | set(setup.key_bound_actuators())
         if used and not used & set(self.ports):
             self.show_message(f"Last setup '{name}' not loaded: none of its actuators is in this dashboard",
                               warning=True, duration_ms=0)
@@ -492,7 +669,7 @@ class KeyboardJog(CustomExt):
         if not name:
             self.show_message("Type a name in 'New name' and click 'Save as'", warning=True)
             return None
-        self.setup_name = self.store.save(name, ui_settings.read_setup(self.settings))
+        self.setup_name = self.store.save(name, self._read_setup())
         self._auto_display = False
         self.store.last = self.setup_name
         self._set_dirty(False)
@@ -583,19 +760,25 @@ class KeyboardJog(CustomExt):
 
     def _fit_window(self):
         win = self.mainwindow
-        if win is None:
+        if win is None or self._closing:
             return
+        history = self.panel.history_visible()
         if self.panel.settings_visible():
-            win.resize(max(win.width(), SETTINGS_SIZE.width()), max(win.height(), SETTINGS_SIZE.height()))
+            height = SETTINGS_SIZE.height() + (HISTORY_SIZE.height() // 2 if history else 0)
+            win.resize(max(win.width(), SETTINGS_SIZE.width()), max(win.height(), height))
+            return
+        widget = self.panel
+        while widget is not None:              # up to the window: the hidden widgets must not count
+            layout = QtWidgets.QWidget.layout(widget)   # pyqtgraph's Dock shadows layout() by an attribute
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+            widget = widget.parentWidget()
+        hint = win.minimumSizeHint()
+        if history:
+            win.resize(max(hint.width(), HISTORY_SIZE.width(), win.width()),
+                       max(hint.height(), HISTORY_SIZE.height()))
         else:
-            widget = self.panel
-            while widget is not None:              # up to the window: the hidden settings must not count
-                layout = QtWidgets.QWidget.layout(widget)   # pyqtgraph's Dock shadows layout() by an attribute
-                if layout is not None:
-                    layout.invalidate()
-                    layout.activate()
-                widget = widget.parentWidget()
-            hint = win.minimumSizeHint()
             win.resize(max(hint.width(), COMPACT_SIZE.width()), max(hint.height(), 60))
 
     def _on_armed_changed(self, armed: bool):
@@ -628,6 +811,9 @@ class KeyboardJog(CustomExt):
         self._modules_timer.stop()
         self.keyboard.reset()
         self.controller.release_all(stop=True)
+        if self._history_timer.isActive():
+            self._history_timer.stop()
+            self.history.save()
         for port in self.ports.values():
             port.disconnect()
 

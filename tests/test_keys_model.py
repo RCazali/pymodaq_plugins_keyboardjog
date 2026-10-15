@@ -3,7 +3,8 @@ import pytest
 
 from helpers import app
 from pymodaq_plugins_keyboardjog.core import keys
-from pymodaq_plugins_keyboardjog.core.model import Binding, Group, JogSetup, build_groups, build_keymap, direction_map
+from pymodaq_plugins_keyboardjog.core.model import (HORIZONTAL, VERTICAL, ExtraKeys, Group, JogSetup, build_groups,
+                                                     build_keymap, direction_map, number_label, number_of)
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +31,7 @@ def test_key_names_round_trip_and_labels():
 
 
 def test_reserved_keys():
-    for name in ('+', '-', '=', 'Shift', 'Ctrl', 'Tab', 'Left', 'Up', '1', '9'):
+    for name in ('+', '-', '=', 'Shift', 'Ctrl', 'Tab', 'Left', 'Up', '1', '9', '0'):
         key = keys.parse_key(name)
         assert key is None or key in keys.RESERVED_KEYS, name
 
@@ -38,16 +39,24 @@ def test_reserved_keys():
 def test_digits():
     assert keys.digit_of(keys.parse_key('1')) == 1
     assert keys.digit_of(keys.parse_key('9')) == 9
-    assert keys.digit_of(keys.parse_key('0')) is None
+    assert keys.digit_of(keys.parse_key('0')) == 10
     assert keys.digit_of(keys.parse_key('A')) is None
-    # AZERTY top row without Shift: 'é' on the physical 2 key
+    # AZERTY top row without Shift: 'é' on the physical 2 key, 'à' on the 0 key
     e_acute = keys.parse_key('É') or 0xc9
     assert keys.digit_of(e_acute, native_scan_code=3, platform='win32') == 2
     assert keys.digit_of(e_acute, native_scan_code=11, platform='linux') == 2
     assert keys.digit_of(e_acute, native_scan_code=3, platform='darwin') is None
+    a_grave = keys.parse_key('À') or 0xc0
+    assert keys.digit_of(a_grave, native_scan_code=11, platform='win32') == 10
+    assert keys.digit_of(a_grave, native_scan_code=19, platform='linux') == 10
     # the '-' of the AZERTY 6 key stays the step key
     assert keys.digit_of(keys.parse_key('-'), native_scan_code=7, platform='win32') is None
     assert keys.digit_of(keys.parse_key('A'), native_scan_code=30, platform='win32') is None
+
+
+def test_number_labels():
+    assert [number_label(n) for n in (1, 9, 10, None)] == ['1', '9', '0', '']
+    assert [number_of(t) for t in ('1', '9', '0', 'auto', '11', '')] == [1, 9, 10, None, None, None]
 
 
 def test_movement_keys():
@@ -67,52 +76,63 @@ def test_movement_keys():
     assert keys.movement_reserved_keys('arrows') == frozenset()
 
 
-def test_default_groups_one_per_actuator():
+def test_default_groups_one_per_actuator_numbered_in_order():
     setup = JogSetup(displayed=['A', 'B', 'C'])
     groups, problems = build_groups(setup, ['A', 'B', 'C', 'D'])
     assert [g.actuators for g in groups] == [['A'], ['B'], ['C']] and not problems
+    assert [g.number for g in groups] == [1, 2, 3]
+    assert all(g.horizontal == g.actuators[0] and g.vertical is None for g in groups)   # default: horizontal
 
 
-def test_pairs_make_one_named_group_at_the_place_of_their_first_member():
-    setup = JogSetup(displayed=['A', 'C'], bindings=[Binding.pair('D', 'B', 'Stage'), Binding.pair('E', 'F')])
+def test_same_pair_number_makes_a_pair():
+    setup = JogSetup(displayed=['A', 'C'], pair_numbers={'D': 2, 'B': 2, 'E': 5},
+                     axes={'B': HORIZONTAL, 'D': VERTICAL, 'E': VERTICAL}, pair_names={2: 'Stage'})
     groups, problems = build_groups(setup, ['A', 'B', 'C', 'D', 'E', 'F'])
-    assert [g.actuators for g in groups] == [['A'], ['D', 'B'], ['C'], ['E', 'F']]
-    assert groups[1].name == 'Stage' and groups[3].name == 'E / F'      # default name
-    assert groups[1].is_pair and not groups[0].is_pair
+    # explicit numbers first take their number, the auto ones take the free numbers in the dashboard order
+    assert [(g.number, g.actuators) for g in groups] == [(1, ['A']), (2, ['B', 'D']), (3, ['C']), (5, ['E'])]
+    pair = groups[1]
+    assert pair.is_pair and pair.title == 'Stage'
+    assert pair.horizontal == 'B' and pair.vertical == 'D' and pair.moved == ['B', 'D']
+    assert groups[3].horizontal is None and groups[3].vertical == 'E'
     assert not problems
 
 
-def test_pair_problems():
-    setup = JogSetup(bindings=[Binding.pair('A', 'B'), Binding.pair('B', 'C'), Binding.pair('D', 'D'),
-                               Binding.pair('E', '')])
+def test_pair_problems_and_default_name():
+    setup = JogSetup(pair_numbers={'A': 1, 'B': 1, 'C': 3, 'D': 3, 'E': 3}, axes={'D': VERTICAL})
     groups, problems = build_groups(setup, ['A', 'B', 'C', 'D', 'E'])
-    assert [g.actuators for g in groups] == [['A', 'B'], ['C'], ['D'], ['E']]
-    assert len(problems) == 2
+    assert [g.actuators for g in groups] == [['A', 'B'], ['C', 'D', 'E']]
+    assert groups[0].title == 'A / B'                      # default name
+    assert groups[0].moved == ['A'] and groups[1].moved == ['C', 'D']
+    assert len(problems) == 2 and all('both horizontal' in p for p in problems)
+
+
+def test_zero_key_and_no_number_after_ten():
+    names = [f'M{i}' for i in range(12)]
+    groups, _ = build_groups(JogSetup(displayed=names), names)
+    assert [g.label for g in groups] == ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '', '']
 
 
 def test_direction_map():
-    pair = direction_map(Group(['X', 'Y']), 0)
+    pair = direction_map(Group(['X', 'Y'], horizontal='X', vertical='Y'), 0)
     assert (pair[keys.LEFT].actuator, pair[keys.LEFT].direction) == ('X', -1)
     assert (pair[keys.RIGHT].actuator, pair[keys.RIGHT].direction) == ('X', +1)
     assert (pair[keys.DOWN].actuator, pair[keys.DOWN].direction) == ('Y', -1)
     assert (pair[keys.UP].actuator, pair[keys.UP].direction) == ('Y', +1)
-    single = direction_map(Group(['Z']))
-    assert {a.actuator for a in single.values()} == {'Z'}
-    assert single[keys.UP].direction == +1 and single[keys.LEFT].direction == -1
+    vertical = direction_map(Group(['Z'], vertical='Z'))
+    assert set(vertical) == {keys.UP, keys.DOWN} and vertical[keys.UP].direction == +1
     assert direction_map(None) == {}
 
 
 def test_extra_keys_cannot_use_the_movement_keys():
-    setup = JogSetup(bindings=[Binding.single('Z', 'A', 'B')])
+    setup = JogSetup(extra_keys=[ExtraKeys('Z', 'A', 'B')])
     keymap, problems = build_keymap(setup, keys.movement_reserved_keys('wasd', azerty=False))
     assert keys.parse_key('A') not in keymap and keys.parse_key('B') in keymap
     assert any('reserved' in p for p in problems)
 
 
 def test_extra_keys_keymap_and_conflicts():
-    setup = JogSetup(bindings=[Binding.pair('X', 'Y'), Binding.single('Z', 'PgDown', 'PgUp'),
-                               Binding.single('W', 'Home', 'PgUp'), Binding.single('R', '+', 'Ctrl+R'),
-                               Binding.single('Q', 'Left', '5'), Binding.single('', 'A', 'B')])
+    setup = JogSetup(extra_keys=[ExtraKeys('Z', 'PgDown', 'PgUp'), ExtraKeys('W', 'Home', 'PgUp'),
+                                 ExtraKeys('R', '+', 'Ctrl+R'), ExtraKeys('Q', 'Left', '5'), ExtraKeys('', 'A', 'B')])
     keymap, problems = build_keymap(setup)
     assert keymap[keys.parse_key('PgDown')].actuator == 'Z'
     assert keys.parse_key('PgUp') not in keymap                 # used twice: disabled for both
@@ -124,18 +144,18 @@ def test_extra_keys_keymap_and_conflicts():
     assert len(problems) == 5
 
 
-def test_shown_actuators_include_bound_ones_in_dashboard_order():
-    setup = JogSetup(displayed=['C'], bindings=[Binding.single('A', 'PgDown', 'PgUp')])
-    assert setup.shown_actuators(['A', 'B', 'C', 'D']) == ['A', 'C']
+def test_shown_actuators_include_paired_and_key_bound_ones_in_dashboard_order():
+    setup = JogSetup(displayed=['C'], pair_numbers={'D': 4}, extra_keys=[ExtraKeys('A', 'PgDown', 'PgUp')])
+    assert setup.shown_actuators(['A', 'B', 'C', 'D']) == ['A', 'C', 'D']
 
 
 def test_restricted_to_skips_missing_actuators():
-    setup = JogSetup(displayed=['A', 'Gone'], bindings=[Binding.pair('A', 'Gone'), Binding.single('Gone2', 'A', 'B')],
-                     steps={'A': 0.1, 'Gone': 2.0})
+    setup = JogSetup(displayed=['A', 'Gone'], pair_numbers={'A': 1, 'Gone': 1}, axes={'Gone': VERTICAL},
+                     continuous=['A', 'Gone'], extra_keys=[ExtraKeys('Gone2', 'A', 'B')],
+                     steps={'A': 0.1, 'Gone': 2.0}, pair_names={1: 'XY'})
     restricted, warnings = setup.restricted_to(['A', 'B'])
-    assert restricted.displayed == ['A']
-    assert len(restricted.bindings) == 1
-    assert restricted.bindings[0].axes[0].actuator == 'A' and restricted.bindings[0].axes[1].actuator == ''
-    assert restricted.steps == {'A': 0.1}
+    assert restricted.displayed == ['A'] and restricted.continuous == ['A']
+    assert restricted.pair_numbers == {'A': 1} and restricted.axes == {}
+    assert restricted.extra_keys == [] and restricted.steps == {'A': 0.1}
     assert len(warnings) == 3
     assert setup.displayed == ['A', 'Gone']               # the original is untouched

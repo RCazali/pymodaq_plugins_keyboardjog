@@ -1,4 +1,4 @@
-"""Motion controller rules with fake actuators and a fake clock."""
+﻿"""Motion controller rules with fake actuators and a fake clock."""
 import pytest
 
 from helpers import FakeClock, FakePort, app
@@ -65,7 +65,7 @@ def test_actuator_moved_by_something_else_is_not_moved(rig):
 
 def test_continuous_mode_repeats_after_move_done_only(rig):
     ctrl, ports, clock, _ = rig
-    ctrl.mode = 'continuous'
+    ctrl.continuous = {'X', 'Y'}
     ctrl.press(X_PLUS)
     assert ports['X'].moves == [0.5]
     for _ in range(5):                        # no move-done: nothing more is sent
@@ -85,7 +85,7 @@ def test_continuous_mode_repeats_after_move_done_only(rig):
 
 def test_continuous_min_interval(rig):
     ctrl, ports, clock, _ = rig
-    ctrl.mode = 'continuous'
+    ctrl.continuous = {'X', 'Y'}
     ctrl.min_interval_s = 0.2
     ctrl.press(X_PLUS)
     ports['X'].finish()
@@ -105,7 +105,7 @@ def test_multiplier_only_in_continuous_mode(rig):
     assert ports['X'].moves == [0.5]          # step mode: modifiers ignored
     ctrl.release(X_PLUS)
     ports['X'].finish()
-    ctrl.mode = 'continuous'
+    ctrl.continuous = {'X', 'Y'}
     ctrl.set_multiplier(10.0)
     ctrl.press(X_PLUS)
     ports['X'].finish()
@@ -117,7 +117,7 @@ def test_multiplier_only_in_continuous_mode(rig):
 
 def test_last_direction_wins_and_both_axes_move(rig):
     ctrl, ports, clock, _ = rig
-    ctrl.mode = 'continuous'
+    ctrl.continuous = {'X', 'Y'}
     ctrl.press(X_PLUS)
     ctrl.press(MoveAction('Y', -1, 0))
     ctrl.press(X_MINUS)                       # X busy: dropped now, but held
@@ -132,7 +132,7 @@ def test_last_direction_wins_and_both_axes_move(rig):
 
 def test_release_all_stops_pending_moves(rig):
     ctrl, ports, clock, _ = rig
-    ctrl.mode = 'continuous'
+    ctrl.continuous = {'X', 'Y'}
     ctrl.press(X_PLUS)
     ctrl.release_all(stop=True)
     assert ports['X'].stops == 1 and ports['Y'].stops == 0
@@ -171,9 +171,46 @@ def test_scale_steps(rig):
 
 def test_mode_change_releases_held_actions(rig):
     ctrl, ports, clock, _ = rig
-    ctrl.mode = 'continuous'
+    ctrl.continuous = {'X', 'Y'}
     ctrl.press(X_PLUS)
-    ctrl.mode = 'step'
-    assert not ctrl.is_held('X')
-    with pytest.raises(ValueError):
-        ctrl.mode = 'warp'
+    ctrl.press(MoveAction('Y', +1, 0))
+    ctrl.continuous = {'Y'}                   # X back to step mode: released; Y unchanged: still held
+    assert not ctrl.is_held('X') and ctrl.is_held('Y')
+
+
+def test_continuous_is_per_actuator(rig):
+    ctrl, ports, clock, _ = rig
+    ctrl.continuous = {'Y'}
+    ctrl.press(X_PLUS)
+    ctrl.press(MoveAction('Y', +1, 0))
+    for _ in range(3):
+        ports['X'].finish()
+        ports['Y'].finish()
+    assert ports['X'].moves == [0.5]          # step mode
+    assert ports['Y'].moves == [2.0] * 4      # continuous
+
+
+def test_move_to_follows_the_no_queue_rule(rig):
+    ctrl, ports, clock, messages = rig
+    started, finished = [], []
+    ctrl.move_started.connect(started.append)
+    ctrl.move_finished.connect(lambda n, v: finished.append((n, v)))
+    assert ctrl.move_to('X', 3.0)
+    assert not ctrl.move_to('X', 4.0)         # still moving: dropped
+    assert ports['X'].moves == [('abs', 3.0)] and ctrl.is_busy('X')
+    ports['X'].finish()
+    assert not ctrl.is_busy('X')
+    assert started == ['X'] and finished == [('X', 3.0)]
+
+
+def test_move_finished_for_moves_of_any_origin(rig):
+    ctrl, ports, clock, _ = rig
+    finished = []
+    ctrl.move_finished.connect(lambda n, v: finished.append((n, v)))
+    ports['Y'].on_done(7.5)                   # moved by the Dashboard or a scan
+    assert finished == [('Y', 7.5)]
+    ctrl.move_timeout_s = 1.0
+    ctrl.press(X_PLUS)
+    clock.advance(2)
+    ctrl.tick()                               # timeout: finished with an unknown value
+    assert finished[-1] == ('X', None)
