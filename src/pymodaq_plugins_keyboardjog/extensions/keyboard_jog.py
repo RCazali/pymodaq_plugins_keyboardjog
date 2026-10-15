@@ -170,6 +170,7 @@ class KeyboardJog(CustomExt):
         self.panel.settings_toggled.connect(self._on_settings_toggled)
         self.panel.history_toggled.connect(self._on_history_toggled)
         self.panel.always_on_top_toggled.connect(self._on_top_checkbox)
+        self.panel.close_requested.connect(self.quit_fun)
         self.keyboard.step_scale_requested.connect(self.scale_steps)
         self.keyboard.select_requested.connect(self.select_number)
         self.keyboard.multiplier_changed.connect(self._on_multiplier)
@@ -808,7 +809,7 @@ class KeyboardJog(CustomExt):
             win.resize(width, height)
 
     def _on_armed_changed(self, armed: bool):
-        if not armed:
+        if not armed and not self._closing:          # closing: already stopped by shutdown
             self.controller.release_all(stop=self.setup.stop_on_focus_loss)
 
     # ---------------------------------------------------------------- PyMoDAQ hooks
@@ -817,6 +818,15 @@ class KeyboardJog(CustomExt):
         if self.panel is not None:
             self.keyboard.reset()
             self.controller.release_all(stop=True)
+
+    def show_dashboard(self, show: bool = None):
+        """Keyboard Jog never hides the Dashboard and leaves its close button alone
+
+        PyMoDAQ 5.3 calls this when the extension opens (the Dashboard was then hidden, and its close button
+        redirected to the 'show dashboard' action of this window, whose toolbar is hidden to stay compact)."""
+        window = getattr(self.dashboard, 'mainwindow', None)
+        if window is not None and show and not window.isVisible():
+            window.show()
 
     def do_things_after_experiment_set(self, experiment_name: str, show_dashboard: bool = None):
         parent = getattr(super(), 'do_things_after_experiment_set', None)
@@ -827,31 +837,37 @@ class KeyboardJog(CustomExt):
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, 'mainwindow', None) and event.type() == QtCore.QEvent.Close:
-            self.shutdown()
+            self.shutdown()          # title-bar X: same clean-up as the close button
         return super().eventFilter(obj, event)
 
     def shutdown(self):
+        """Every way of closing ends here (close button, title-bar X, Dashboard quit): stop the moves started here,
+        save the history, release the actuators, show the Dashboard again if it was hidden"""
         if self._closing:
             return
         self._closing = True
         self._modules_timer.stop()
+        self._message_timer.stop()
+        self.panel._watchdog.stop()
         self.keyboard.reset()
         self.controller.release_all(stop=True)
-        if self._history_timer.isActive():
-            self._history_timer.stop()
-            self.history.save()
+        self._history_timer.stop()
+        self.history.save()
         for port in self.ports.values():
             port.disconnect()
+        try:
+            self.disconnect_tree()
+        except Exception:  # pragma: no cover - older CustomApp
+            pass
+        self.show_dashboard(True)
 
     def _quit_fun(self) -> bool:
-        return True       # PyMoDAQ 5.3: CustomExt.quit_fun does nothing unless this hook returns True
+        return True
 
     def quit_fun(self) -> bool:
+        """Close the extension. CustomExt.quit_fun is not called: in PyMoDAQ 5.3 it calls show_dashboard, which
+        replaces the closeEvent of the Dashboard window (its close button would then do nothing)"""
         self.shutdown()
-        try:
-            super().quit_fun()
-        except Exception:
-            pass
         if self.mainwindow is not None:
             self.mainwindow.close()
         return True

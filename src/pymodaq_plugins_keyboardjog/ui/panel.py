@@ -168,6 +168,7 @@ class JogPanel(QtWidgets.QFrame):
     settings_toggled = QtCore.Signal(bool)
     history_toggled = QtCore.Signal(bool)
     always_on_top_toggled = QtCore.Signal(bool)
+    close_requested = QtCore.Signal()
     group_clicked = QtCore.Signal(int)
     context_requested = QtCore.Signal(int, str, QtCore.QPoint)   # group, actuator ('' = the line), global pos
 
@@ -207,7 +208,11 @@ class JogPanel(QtWidgets.QFrame):
         self.settings_button.setCheckable(True)
         self.settings_button.setAutoRaise(True)
         self.settings_button.setToolTip('Show / hide the settings')
-        for w in (self.on_top_check, self.history_button, self.settings_button):
+        self.close_button = QtWidgets.QToolButton()
+        self.close_button.setText('✕')
+        self.close_button.setAutoRaise(True)
+        self.close_button.setToolTip('Close Keyboard Jog (the moves it started are stopped)')
+        for w in (self.on_top_check, self.history_button, self.settings_button, self.close_button):
             w.setFocusPolicy(Qt.NoFocus)     # clicking them must not take the focus from the panel
         header.addWidget(self.state_label)
         header.addStretch()
@@ -215,6 +220,7 @@ class JogPanel(QtWidgets.QFrame):
         header.addWidget(self.on_top_check)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
+        header.addWidget(self.close_button)
         layout.addLayout(header)
 
         body = QtWidgets.QHBoxLayout()
@@ -262,6 +268,7 @@ class JogPanel(QtWidgets.QFrame):
         self.on_top_check.toggled.connect(self.always_on_top_toggled.emit)
         self.history_button.toggled.connect(self._toggle_history)
         self.settings_button.toggled.connect(self._toggle_settings)
+        self.close_button.clicked.connect(self.close_requested.emit)
 
         self._watchdog = QtCore.QTimer(self)
         self._watchdog.setInterval(250)

@@ -614,6 +614,30 @@ def test_last_setup_reloaded_at_startup(jog, modules, tmp_path, monkeypatch):
         win.close()
 
 
+@pytest.mark.parametrize('how', ['button', 'title bar'])
+def test_close(modules, tmp_path, monkeypatch, how):
+    """The close button and the X of the title bar close the window and stop the moves started here"""
+    spies = {m.title: Spy(m, monkeypatch) for m in modules}
+    set_tau(modules[0], 2000)
+    ext, win = new_extension(modules, tmp_path, monkeypatch)
+    win.show()
+    activate(ext)
+    tap(ext, Qt.Key_D)
+    assert ext.controller.is_busy('Stage X')
+    if how == 'button':
+        ext.panel.close_button.click()
+    else:
+        ext.mainwindow.close()
+    assert wait(lambda: not ext.mainwindow.isVisible(), 2)
+    assert spies['Stage X'].stops == 1                   # the move in progress is stopped
+    assert not ext._modules_timer.isActive() and not ext.panel._watchdog.isActive()
+    ext.quit_fun()                                       # the Dashboard quitting afterwards: no error, no 2nd stop
+    assert spies['Stage X'].stops == 1
+    win.close()
+    set_tau(modules[0], 50)
+    assert wait(lambda: modules[0].move_done_bool, 10)
+
+
 def test_always_on_top(jog):
     ext, spies = jog
     win = ext.mainwindow

@@ -101,3 +101,17 @@ def test_dashboard_runs_the_extension(loaded):
     QtWidgets.QApplication.sendEvent(ext.panel, key_event('press', QtCore.Qt.Key_D))
     QtWidgets.QApplication.sendEvent(ext.panel, key_event('release', QtCore.Qt.Key_D))
     assert wait(lambda: abs(ext.values['Jog X'] - x0 - 0.05) < 1e-3, 15)
+
+
+def test_the_dashboard_stays_visible_and_closable(loaded):
+    """PyMoDAQ 5.3 hides the Dashboard when an extension opens and redirects its close button to the extension:
+    Keyboard Jog must not (its toolbar is hidden, the Dashboard could not be shown again)"""
+    dashboard, ext = loaded
+    dashboard_window = getattr(dashboard, 'mainwindow', None)
+    if dashboard_window is not None:
+        assert dashboard_window.isVisible()
+        assert 'closeEvent' not in vars(dashboard_window)
+    ext.panel.close_button.click()
+    assert not ext.mainwindow.isVisible()
+    if dashboard_window is not None:
+        assert dashboard_window.isVisible() and 'closeEvent' not in vars(dashboard_window)
