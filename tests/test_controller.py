@@ -203,6 +203,15 @@ def test_move_to_follows_the_no_queue_rule(rig):
     assert started == ['X'] and finished == [('X', 3.0)]
 
 
+def test_move_to_the_current_position_does_not_lock_the_actuator(rig):
+    ctrl, ports, clock, messages = rig
+    ports['X'].move_abs = lambda value: False     # DAQ_Move: target == current value, no move started
+    assert not ctrl.move_to('X', 0.0)
+    assert not ctrl.is_busy('X')
+    ctrl.press(X_PLUS)                            # the keys still move it
+    assert ports['X'].moves == [0.5]
+
+
 def test_move_finished_for_moves_of_any_origin(rig):
     ctrl, ports, clock, _ = rig
     finished = []

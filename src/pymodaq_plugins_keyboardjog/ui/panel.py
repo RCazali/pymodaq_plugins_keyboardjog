@@ -1,10 +1,11 @@
 """The compact main view: one line per group, the focus indicator, the (hidden) history and settings.
 
-Layout: one line per group (number, name, horizontal value, vertical value, units), in columns of at most 5 lines
-(6 groups: 3 + 3, 10 groups: 5 + 5). The values are right-aligned in a fixed-width font, with a fixed number of
-decimals per actuator (from its step), so that they do not move. A headless actuator shows no value (its name turns
-orange while it moves). The step, mode and keys of the selected group only are shown in the detail line below.
-The history plot is on the right side.
+Layout: one line per group (colored number, name, horizontal value, vertical value, units), in columns of at most 5
+lines (6 groups: 3 + 3, 10 groups: 5 + 5). The values are right-aligned in a fixed-width font, with a fixed number of
+decimals per actuator (from its step), so that they do not move. The selected line is on a light band, the others are
+dimmed. A headless actuator shows no value (its name turns orange while it moves). The keys, steps, mode and
+displacement since the selection of the selected group only are in the detail line below. The history plot is on
+the right side.
 
 Focus indicator (main safety feature): the panel is *armed* only while it owns the keyboard focus in the active
 window. Armed = green border, the keys move the actuators. Not armed = red border, every key is ignored.
@@ -13,9 +14,10 @@ gives the focus to the tree, so the panel turns red: typing a value never moves 
 """
 from __future__ import annotations
 
+import html
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -26,16 +28,22 @@ Qt = QtCore.Qt
 ARMED_COLOR = '#27ae60'
 DISARMED_COLOR = '#c0392b'
 WARNING_COLOR = '#d35400'
-BUSY_STYLE = 'background-color: #e67e22; color: white; border-radius: 3px; padding: 0px 3px;'
-IDLE_STYLE = 'padding: 0px 3px;'
-SELECTED_MARK = '▶'
+BUSY_BACKGROUND = '#e67e22'
+SELECTION_BAND = 'rgba(39, 174, 96, 30)'
+#: muted colors of the group numbers (also the color of the group in the history)
+GROUP_COLORS = ('#5b8db8', '#d9895b', '#6aa56a', '#c96a6a', '#8c7bb5', '#a68662', '#c27aa8', '#5fa8a8',
+                '#b8a54f', '#7f8c99')
 MAX_LINES = 5            # lines per column of groups
 COLUMNS_PER_BLOCK = 6    # number, name, horizontal, vertical, units, gap
-H_ARROW, V_ARROW = '↔', '↕'
 
 
 def hint_text(move_keys_label: str) -> str:
-    return f'1-9, 0 or click: select   {move_keys_label}: move   + / -: step   right-click: options'
+    return (f'1-9, 0 or click: select (again: reset Δ)   {move_keys_label}: move   + / -: step\n'
+            f'right-click a line: pair, keys, continuous, headless, hide')
+
+
+def group_color(index: int) -> str:
+    return GROUP_COLORS[index % len(GROUP_COLORS)]
 
 
 def pymodaq_icon(names: Iterable[str], color: str) -> Optional[QtGui.QIcon]:
@@ -106,6 +114,7 @@ class GroupRow:
     units: Dict[str, str] = field(default_factory=dict)
     headless: Set[str] = field(default_factory=set)
     tooltip: str = ''
+    color: str = ''
 
     @property
     def actuators(self) -> List[str]:
@@ -121,32 +130,44 @@ class GroupRow:
         return ' / '.join(units)
 
 
+@dataclass
+class DetailItem:
+    """One actuator in the detail line: its key groups (shown as key caps: movement keys, extra keys) and a text
+    (step, mode, Δ)"""
+    keys: Sequence[Sequence[str]]
+    text: str
+
+    def plain(self) -> str:
+        return f"{' '.join('/'.join(group) for group in self.keys)} {self.text}".strip()
+
+
 class _Line:
     """The labels of one group line"""
 
     def __init__(self, grid: QtWidgets.QGridLayout, line: int, column: int, info: GroupRow, value_font: QtGui.QFont):
         self.info = info
-        self.number = QtWidgets.QLabel(info.number)
-        self.number.setMinimumWidth(22)
+        self.selected = False
+        self.number = QtWidgets.QLabel(info.number or '·')
+        self.number.setAlignment(Qt.AlignCenter)
+        self.number.setFixedWidth(18)
+        self.number.setStyleSheet(f'background-color: {info.color or "gray"}; color: white; border-radius: 3px; '
+                                  f'font-weight: bold;')
         self.name = QtWidgets.QLabel(info.title)
-        self.values = {}
+        self.values: Dict[str, QtWidgets.QLabel] = {}
         for name in info.actuators:
             label = QtWidgets.QLabel('' if name in info.headless else '---')
             label.setFont(value_font)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            label.setStyleSheet(IDLE_STYLE)
             self.values[name] = label
         self.h_value = self.values.get(info.horizontal) or QtWidgets.QLabel('')
         self.v_value = self.values.get(info.vertical) or QtWidgets.QLabel('')
         self.units = QtWidgets.QLabel(info.units_text())
-        self.units.setStyleSheet('color: gray;')
         base = column * COLUMNS_PER_BLOCK
         for offset, label in enumerate(self.labels):
             label.setTextInteractionFlags(Qt.NoTextInteraction)
             label.setToolTip(info.tooltip)
             grid.addWidget(label, line, base + offset)
-        self.number.setStyleSheet('color: gray;')
-        self.name.setStyleSheet(IDLE_STYLE)
+        self.grid_position = (line, base)
 
     @property
     def labels(self):
@@ -158,13 +179,33 @@ class _Line:
                 return name
         return ''
 
-    def set_selected(self, selected: bool):
-        for label in (self.name, self.number):
-            font = label.font()
-            font.setBold(selected)
-            label.setFont(font)
-        self.number.setText(f'{SELECTED_MARK} {self.info.number}'.strip() if selected else self.info.number)
-        self.number.setStyleSheet(f'color: {ARMED_COLOR};' if selected else 'color: gray;')
+    def is_busy_label(self, label: QtWidgets.QLabel) -> bool:
+        return bool(label.property('busy'))
+
+    def apply_style(self, busy: Set[str], normal: str, muted: str, value_font: QtGui.QFont):
+        """Selected: normal color, bold name, values one point larger. Others dimmed. Moving: orange background"""
+        color = normal if self.selected else muted
+        font = QtGui.QFont(self.name.font())
+        font.setBold(self.selected)
+        self.name.setFont(font)
+        big = QtGui.QFont(value_font)
+        if self.selected and value_font.pointSizeF() > 0:
+            big.setPointSizeF(value_font.pointSizeF() + 1)
+        headless_busy = any(a in busy for a in self.info.actuators if a in self.info.headless)
+        self._style(self.name, color, headless_busy)
+        for name, label in self.values.items():
+            label.setFont(big)
+            self._style(label, color, name in busy and name not in self.info.headless)
+        self.units.setStyleSheet(f'color: {muted};')
+
+    @staticmethod
+    def _style(label: QtWidgets.QLabel, color: str, busy: bool):
+        label.setProperty('busy', busy)
+        if busy:
+            label.setStyleSheet(f'background-color: {BUSY_BACKGROUND}; color: white; border-radius: 3px; '
+                                f'padding: 0px 3px;')
+        else:
+            label.setStyleSheet(f'color: {color}; padding: 0px 3px;')
 
     def remove(self, grid: QtWidgets.QGridLayout):
         for label in self.labels:
@@ -179,6 +220,7 @@ class JogPanel(QtWidgets.QFrame):
     history_toggled = QtCore.Signal(bool)
     always_on_top_toggled = QtCore.Signal(bool)
     close_requested = QtCore.Signal()
+    positions_requested = QtCore.Signal(QtCore.QPoint)        # global position of the positions button
     group_clicked = QtCore.Signal(int)
     context_requested = QtCore.Signal(int, str, QtCore.QPoint)   # group, actuator ('' = the line), global pos
 
@@ -190,10 +232,11 @@ class JogPanel(QtWidgets.QFrame):
         self._armed: Optional[bool] = None
         self._lines: List[_Line] = []
         self._line_of: Dict[str, _Line] = {}       # actuator -> its line
-        self._arrows: List[QtWidgets.QLabel] = []   # ↔ ↕ column headers
         self._values: Dict[str, Optional[float]] = {}
         self._steps: Dict[str, float] = {}
         self._busy: Set[str] = set()
+        self._selected = -1
+        self._detail_plain = ''
         self._value_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -202,40 +245,36 @@ class JogPanel(QtWidgets.QFrame):
 
         header = QtWidgets.QHBoxLayout()
         header.setSpacing(6)
+        self.close_button = self._tool_button(close_icon(), '✕', 'Close Keyboard Jog (the moves it started are '
+                                                                 'stopped)')
+        if self.close_button.icon().isNull():
+            self.close_button.setStyleSheet(f'color: {DISARMED_COLOR}; font-weight: bold;')
         self.state_label = QtWidgets.QLabel('')
         self.mode_label = QtWidgets.QLabel('')
         self.mode_label.setStyleSheet(f'color: {WARNING_COLOR}; font-weight: bold;')
         self.on_top_check = QtWidgets.QCheckBox('On top')
         self.on_top_check.setChecked(True)
         self.on_top_check.setToolTip('Keep this window above the other windows')
-        self.history_button = QtWidgets.QToolButton()
+        self.on_top_check.setFocusPolicy(Qt.NoFocus)
+        self.positions_button = self._tool_button(pymodaq_icon(('target',), ARMED_COLOR), 'Pos.',
+                                                  'Saved positions of the selected group: go to one, save the '
+                                                  'current position')
+        self.history_button = self._tool_button(None, '', 'Show / hide the history of the moves of the selected '
+                                                          'group')
         self.history_button.setCheckable(True)
-        self.history_button.setAutoRaise(True)
-        self.history_button.setToolTip('Show / hide the history of the moves of the selected group')
         self._update_history_icon(False)
-        self.settings_button = QtWidgets.QToolButton()
-        self.settings_button.setText('Settings')
+        self.settings_button = self._tool_button(None, 'Settings', 'Show / hide the settings')
         self.settings_button.setCheckable(True)
-        self.settings_button.setAutoRaise(True)
-        self.settings_button.setToolTip('Show / hide the settings')
-        self.close_button = QtWidgets.QToolButton()       # first on the left, red, as the Quit of PyMoDAQ 5.3
-        self.close_button.setAutoRaise(True)
-        self.close_button.setToolTip('Close Keyboard Jog (the moves it started are stopped)')
-        icon = close_icon()
-        if icon is not None:
-            self.close_button.setIcon(icon)
-        else:
-            self.close_button.setText('✕')
-            self.close_button.setStyleSheet(f'color: {DISARMED_COLOR}; font-weight: bold;')
-        for w in (self.on_top_check, self.history_button, self.settings_button, self.close_button):
-            w.setFocusPolicy(Qt.NoFocus)     # clicking them must not take the focus from the panel
+        self.help_button = self._tool_button(pymodaq_icon(('help', 'help1'), 'gray'), '?', hint_text('W A S D'))
         header.addWidget(self.close_button)
         header.addWidget(self.state_label)
         header.addStretch()
         header.addWidget(self.mode_label)
         header.addWidget(self.on_top_check)
+        header.addWidget(self.positions_button)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
+        header.addWidget(self.help_button)
         layout.addLayout(header)
 
         body = QtWidgets.QHBoxLayout()
@@ -247,6 +286,9 @@ class JogPanel(QtWidgets.QFrame):
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(8)
         self.grid.setVerticalSpacing(1)
+        self._band = QtWidgets.QFrame(self.rows_widget)          # light band behind the selected line
+        self._band.setStyleSheet(f'background-color: {SELECTION_BAND}; border-radius: 3px;')
+        self._band.hide()
         left.addWidget(self.rows_widget)
 
         self.empty_label = QtWidgets.QLabel('No actuator in the Dashboard (or all hidden: see the settings).')
@@ -254,12 +296,9 @@ class JogPanel(QtWidgets.QFrame):
         left.addWidget(self.empty_label)
 
         self.detail_label = QtWidgets.QLabel('')
-        self.detail_label.setToolTip('Keys, step and motion mode of the selected group')
+        self.detail_label.setTextFormat(Qt.RichText)
+        self.detail_label.setToolTip('Selected group: keys, step, mode and displacement since its selection (Δ)')
         left.addWidget(self.detail_label)
-
-        self.hint_label = QtWidgets.QLabel(hint_text('W A S D'))
-        self.hint_label.setStyleSheet('color: gray; font-size: 8pt;')
-        left.addWidget(self.hint_label)
 
         self.message_label = QtWidgets.QLabel('')
         self.message_label.setWordWrap(True)
@@ -284,12 +323,40 @@ class JogPanel(QtWidgets.QFrame):
         self.history_button.toggled.connect(self._toggle_history)
         self.settings_button.toggled.connect(self._toggle_settings)
         self.close_button.clicked.connect(self.close_requested.emit)
+        self.positions_button.clicked.connect(
+            lambda: self.positions_requested.emit(self.positions_button.mapToGlobal(
+                QtCore.QPoint(0, self.positions_button.height()))))
+        self.help_button.clicked.connect(lambda: QtWidgets.QToolTip.showText(
+            self.help_button.mapToGlobal(QtCore.QPoint(0, self.help_button.height())), self.help_button.toolTip(),
+            self.help_button))
 
         self._watchdog = QtCore.QTimer(self)
         self._watchdog.setInterval(250)
         self._watchdog.timeout.connect(self.update_armed)
         self._watchdog.start()
         self.update_armed()
+
+    @staticmethod
+    def _tool_button(icon: Optional[QtGui.QIcon], text: str, tip: str) -> QtWidgets.QToolButton:
+        button = QtWidgets.QToolButton()
+        button.setAutoRaise(True)
+        button.setToolTip(tip)
+        button.setFocusPolicy(Qt.NoFocus)     # clicking it must not take the focus from the panel
+        if icon is not None:
+            button.setIcon(icon)
+        else:
+            button.setText(text)
+        return button
+
+    def _colors(self) -> Tuple[str, str]:
+        """(normal, dimmed) text colors from the palette (light and dark themes)"""
+        palette = self.palette()
+        text = palette.color(QtGui.QPalette.WindowText)
+        back = palette.color(QtGui.QPalette.Window)
+        mix = lambda a, b: int(a * 0.55 + b * 0.45)  # noqa: E731
+        muted = QtGui.QColor(mix(text.red(), back.red()), mix(text.green(), back.green()),
+                             mix(text.blue(), back.blue()))
+        return text.name(), muted.name()
 
     # ------------------------------------------------------------------ settings / history containers
     def set_settings_widget(self, widget: QtWidgets.QWidget):
@@ -332,43 +399,27 @@ class JogPanel(QtWidgets.QFrame):
         """One line per group, in columns of at most MAX_LINES lines"""
         for line in self._lines:
             line.remove(self.grid)
-        for label in self._arrows:
-            self.grid.removeWidget(label)
-            label.hide()
-            label.deleteLater()
-        self._lines, self._line_of, self._arrows = [], {}, []
+        self.grid.removeWidget(self._band)
+        self._band.hide()
+        self._lines, self._line_of = [], {}
         for column in range(self.grid.columnCount()):
             self.grid.setColumnMinimumWidth(column, 0)
         rows = list(rows)
         columns, lines = grid_shape(len(rows))
-        any_h = any(r.horizontal and r.horizontal not in r.headless for r in rows)
-        any_v = any(r.vertical and r.vertical not in r.headless for r in rows)
-        for column in range(columns):
-            base = column * COLUMNS_PER_BLOCK
-            for offset, arrow, shown in ((2, H_ARROW, any_h), (3, V_ARROW, any_v)):
-                label = QtWidgets.QLabel(arrow if shown else '')
-                label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
-                label.setStyleSheet('color: gray; font-size: 8pt;')
-                label.setToolTip('horizontal (left / right keys)' if arrow == H_ARROW else 'vertical (down / up keys)')
-                self.grid.addWidget(label, 0, base + offset)
-                self._arrows.append(label)
-            if column:
-                self.grid.setColumnMinimumWidth(base - 1, 12)        # gap between two columns of groups
+        for column in range(1, columns):
+            self.grid.setColumnMinimumWidth(column * COLUMNS_PER_BLOCK - 1, 12)   # gap between two columns
         for i, info in enumerate(rows):
-            line = _Line(self.grid, 1 + i % lines, i // lines, info, self._value_font)
+            line = _Line(self.grid, i % lines, i // lines, info, self._value_font)
             self._lines.append(line)
             for name in info.actuators:
                 self._line_of[name] = line
                 self._show_value(name)
-                self._show_busy(name)
         self.empty_label.setVisible(not rows)
-        self.hint_label.setVisible(bool(rows))
         self.detail_label.setVisible(bool(rows))
-        for label in self._arrows:
-            label.setVisible(any_h or any_v)
+        self.set_selected(self._selected)
 
     def set_hint(self, move_keys_label: str):
-        self.hint_label.setText(hint_text(move_keys_label))
+        self.help_button.setToolTip(hint_text(move_keys_label))
 
     def row_names(self) -> List[str]:
         """The actuators of the lines, in the line order"""
@@ -378,11 +429,11 @@ class JogPanel(QtWidgets.QFrame):
         return len(self._lines)
 
     def line_position(self, index: int) -> Tuple[int, int]:
-        """(grid row, grid column) of the line of the group of this index"""
+        """(line, column of groups) of the group of this index"""
         for line in self._lines:
             if line.info.index == index:
-                row, column, _, _ = self.grid.getItemPosition(self.grid.indexOf(line.number))
-                return row, column // COLUMNS_PER_BLOCK
+                row, base = line.grid_position
+                return row, base // COLUMNS_PER_BLOCK
         return -1, -1
 
     def header_text(self, index: int) -> str:
@@ -392,17 +443,40 @@ class JogPanel(QtWidgets.QFrame):
         return ''
 
     def set_selected(self, index: int):
+        self._selected = index
+        self.grid.removeWidget(self._band)
+        self._band.hide()
         for line in self._lines:
-            line.set_selected(line.info.index == index)
+            line.selected = line.info.index == index
+            if line.selected:
+                row, base = line.grid_position
+                self.grid.addWidget(self._band, row, base, 1, COLUMNS_PER_BLOCK - 1)
+                self._band.show()
+                self._band.lower()
+        self._restyle()
 
     def selected_names(self) -> List[str]:
-        return [name for line in self._lines if line.name.font().bold() for name in line.info.actuators]
+        return [name for line in self._lines if line.selected for name in line.info.actuators]
 
-    def set_detail(self, text: str):
-        self.detail_label.setText(text)
+    def _restyle(self):
+        normal, muted = self._colors()
+        for line in self._lines:
+            line.apply_style(self._busy, normal, muted, self._value_font)
+
+    def set_detail(self, items: Sequence[DetailItem]):
+        """Detail line of the selected group: key caps, then step / mode / Δ of each actuator"""
+        self._detail_plain = '   '.join(item.plain() for item in items)
+        normal, muted = self._colors()
+        parts = []
+        for item in items:
+            caps = '&nbsp;'.join(''.join(f"<span style='background-color:{muted}; color:white;'>&nbsp;"
+                                         f"{html.escape(k)}&nbsp;</span>&nbsp;" for k in group)
+                                 for group in item.keys)
+            parts.append(f'{caps}{html.escape(item.text)}')
+        self.detail_label.setText('&nbsp;&nbsp;&nbsp;'.join(parts))
 
     def detail_text(self) -> str:
-        return self.detail_label.text()
+        return self._detail_plain
 
     # ------------------------------------------------------------------ values
     def set_value(self, name: str, value: Optional[float]):
@@ -420,7 +494,10 @@ class JogPanel(QtWidgets.QFrame):
         label = line.values[name]
         text = format_value(self._values.get(name), '', self._steps.get(name))
         label.setText(text)
-        width = QtGui.QFontMetrics(label.font()).horizontalAdvance(text) + 8
+        font = QtGui.QFont(self._value_font)
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() + 1)                # room for the selected (larger) font
+        width = QtGui.QFontMetrics(font).horizontalAdvance(text) + 8
         if width > label.minimumWidth():          # grows, never shrinks: the columns do not jump
             label.setMinimumWidth(width)
 
@@ -430,29 +507,23 @@ class JogPanel(QtWidgets.QFrame):
 
     def set_busy(self, name: str, busy: bool):
         """Value (or name of a headless actuator) highlighted while the actuator moves"""
+        if (name in self._busy) == busy:
+            return
         if busy:
             self._busy.add(name)
         else:
             self._busy.discard(name)
-        self._show_busy(name)
-
-    def _show_busy(self, name: str):
         line = self._line_of.get(name)
-        if line is None:
-            return
-        busy = name in self._busy
-        if name in line.info.headless:
-            moving = any(a in self._busy for a in line.info.actuators if a in line.info.headless)
-            line.name.setStyleSheet(BUSY_STYLE if moving else IDLE_STYLE)
-        else:
-            line.values[name].setStyleSheet(BUSY_STYLE if busy else IDLE_STYLE)
+        if line is not None:
+            normal, muted = self._colors()
+            line.apply_style(self._busy, normal, muted, self._value_font)
 
     def is_busy_shown(self, name: str) -> bool:
         line = self._line_of.get(name)
         if line is None:
             return False
         label = line.name if name in line.info.headless else line.values[name]
-        return label.styleSheet() == BUSY_STYLE
+        return line.is_busy_label(label)
 
     def set_mode_text(self, text: str):
         self.mode_label.setText(text)
@@ -468,6 +539,10 @@ class JogPanel(QtWidgets.QFrame):
         for line in self._lines:
             if child in line.labels:
                 return line.info, line.actuator_at(child)
+        if child is self._band:
+            for line in self._lines:
+                if line.selected:
+                    return line.info, ''
         return None, ''
 
     # ------------------------------------------------------------------ focus / armed state

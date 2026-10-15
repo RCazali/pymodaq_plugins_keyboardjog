@@ -25,7 +25,7 @@ AXIS_TIP = ('horizontal: moved by the left / right keys (A / D or Q / D, arrows)
 CONTINUOUS_TIP = ('off: one key press = one step. on: steps repeated while the key is held, each one once the '
                   'previous move is done (Shift = step x10, Ctrl = step /10 while held)')
 
-GENERAL_NAMES = ('move_keys', 'step_factor', 'always_on_top', 'show_history', 'min_interval_ms',
+GENERAL_NAMES = ('all_continuous', 'move_keys', 'step_factor', 'always_on_top', 'show_history', 'min_interval_ms',
                  'stop_on_focus_loss', 'move_timeout_s')
 
 
@@ -46,6 +46,9 @@ def settings_params() -> list:
         {'title': 'Actuators', 'name': 'actuators', 'type': 'group', 'children': [],
          'tip': 'Pair number, keys, step, motion mode and display of each actuator of the Dashboard'},
         {'title': 'Motion', 'name': 'general', 'type': 'group', 'children': [
+            {'title': 'All continuous:', 'name': 'all_continuous', 'type': 'bool', 'value': False,
+             'tip': 'Every actuator in continuous mode (steps repeated while the key is held). Off: the choice of '
+                    'each actuator (Actuators > Continuous) applies'},
             {'title': 'Move keys:', 'name': 'move_keys', 'type': 'list', 'limits': list(MOVE_KEY_SETS),
              'value': WASD, 'tip': 'Keys moving the selection. wasd: the W A S D keys by their position on the '
                                    'keyboard (Z Q S D on an AZERTY keyboard). arrows: the arrow keys. both.'},
@@ -83,8 +86,8 @@ def fill_actuators(settings: Parameter, names: Sequence[str], units: Dict[str, s
              'tip': AXIS_TIP},
             {'title': 'Step:', 'name': 'step', 'type': 'float', 'value': setup.step(name), 'min': 1e-12,
              'suffix': units.get(name, ''), 'decimals': 6},
-            {'title': 'Continuous:', 'name': 'continuous', 'type': 'bool', 'value': setup.is_continuous(name),
-             'tip': CONTINUOUS_TIP},
+            {'title': 'Continuous:', 'name': 'continuous', 'type': 'bool', 'value': name in setup.continuous,
+             'tip': CONTINUOUS_TIP + ' (Motion > All continuous overrides it)'},
             {'title': 'Headless:', 'name': 'headless', 'type': 'bool', 'value': setup.is_headless(name),
              'tip': HEADLESS_TIP},
         ]})

@@ -2,7 +2,8 @@
 
 A pair is drawn in 2D (horizontal actuator on x, vertical on y), a single actuator along its own axis. The points go
 from grey (old) to yellow (recent), the circled point is the last end of move, the cross the live position. Hovering
-a point shows its values and time; clicking it asks to go back there.
+a point shows its values and time; clicking it asks to go back there, right-clicking it saves it as a named
+position. The saved positions of the group are drawn as named stars: click one to go there.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from qtpy import QtCore, QtWidgets
 HIST_BG = '#1e1e2e'
 HIST_STOPS = np.array([[112, 118, 146], [137, 180, 250], [249, 226, 175]], dtype=float)
 HIST_MARKER = '#f38ba8'
+MARK_COLOR = '#a6e3a1'
 
 
 def _history_colors(n: int) -> np.ndarray:
@@ -30,11 +32,15 @@ def _history_colors(n: int) -> np.ndarray:
 
 class HistoryPlot(QtWidgets.QWidget):
     point_clicked = QtCore.Signal(int)
+    point_save_requested = QtCore.Signal(int)     # right-click on a point
+    mark_clicked = QtCore.Signal(str)             # click on a saved position
     clear_requested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget = None):
         super().__init__(parent)
         self._points: list = []
+        self._marks: list = []                    # [(name, values)]
+        self._mark_labels: list = []
         self._live: Optional[list] = None
         self._user_view = False          # the user zoomed / panned: stop following the data
         self._dims = 0
@@ -87,6 +93,10 @@ class HistoryPlot(QtWidgets.QWidget):
         self.plot.addItem(self._scatter)
         self._last = pg.ScatterPlotItem(size=13, symbol='o', brush=None, pen=pg.mkPen((249, 226, 175), width=1.5))
         self.plot.addItem(self._last)
+        self._marks_item = pg.ScatterPlotItem(size=15, symbol='star', pen=pg.mkPen('#1e1e2e', width=1),
+                                              brush=pg.mkBrush(MARK_COLOR))
+        self._marks_item.sigClicked.connect(self._on_marks_clicked)
+        self.plot.addItem(self._marks_item)
         self._cursor = pg.ScatterPlotItem(size=16, symbol='+', pen=pg.mkPen(HIST_MARKER, width=2),
                                           brush=pg.mkBrush(HIST_MARKER))
         self.plot.addItem(self._cursor)
@@ -99,12 +109,13 @@ class HistoryPlot(QtWidgets.QWidget):
         self._user_view = True
 
     def set_group(self, name: str, orient: Optional[str], labels: Sequence[str], units: Sequence[str],
-                  decimals: Sequence[int]):
+                  decimals: Sequence[int], color: str = ''):
         """orient: '2d' (pair), 'h' (one horizontal actuator), 'v' (one vertical actuator), None (nothing)"""
         self._orient = orient
         self._dims = len(labels) if orient else 0
         self._decimals = list(decimals) + [4, 4]
-        self.title.setText(f'History · {name}')
+        mark = f"<span style='color:{color};'>■</span> " if color else ''
+        self.title.setText(f'{mark}History · {name}')
         item = self.plot.getPlotItem()
         show_x = orient in ('2d', 'h')
         show_y = orient in ('2d', 'v')
@@ -121,6 +132,27 @@ class HistoryPlot(QtWidgets.QWidget):
 
     def point_count(self) -> int:
         return len(self._points)
+
+    def mark_names(self) -> List[str]:
+        return [name for name, _ in self._marks]
+
+    def set_marks(self, marks: Sequence[tuple]):
+        """Saved positions of the group: [(name, values)], drawn as named stars"""
+        for label in self._mark_labels:
+            self.plot.removeItem(label)
+        self._mark_labels = []
+        self._marks = [(name, list(values)) for name, values in marks
+                       if self._dims and len(values) == self._dims]
+        if not self._marks:
+            self._marks_item.setData([], [])
+            return
+        xs, ys = self._xy([values for _, values in self._marks])
+        self._marks_item.setData(x=xs, y=ys, data=[name for name, _ in self._marks])
+        for (name, _), x, y in zip(self._marks, xs, ys):
+            label = pg.TextItem(name, color=MARK_COLOR, anchor=(0, 1.2))
+            label.setPos(float(x), float(y))
+            self.plot.addItem(label)
+            self._mark_labels.append(label)
 
     def set_points(self, points: List[list], live: Optional[list]):
         self._points = points
@@ -183,7 +215,7 @@ class HistoryPlot(QtWidgets.QWidget):
     def fit(self):
         item = self.plot.getPlotItem()
         item.disableAutoRange()
-        points = [p[1:] for p in self._points]
+        points = [p[1:] for p in self._points] + [values for _, values in self._marks]
         if self._live and self._dims and all(v is not None for v in self._live):
             points.append(self._live)
         if not points or self._dims == 0:
@@ -218,10 +250,25 @@ class HistoryPlot(QtWidgets.QWidget):
             return ''
         values = '  '.join(f'{v:.{d}f}' for v, d in zip(point[1:], self._decimals))
         when = time.strftime('%d/%m %H:%M:%S', time.localtime(point[0])) if point[0] else ''
-        return f'#{int(data)}   {values}\n{when}\nclick = go back here'
+        return f'#{int(data)}   {values}\n{when}\nclick: go back here, right-click: save as a position'
+
+    @staticmethod
+    def _is_right_click(args) -> bool:
+        event = args[0] if args else None          # pyqtgraph >= 0.12 passes the mouse event
+        try:
+            return event is not None and event.button() == QtCore.Qt.RightButton
+        except Exception:
+            return False
 
     def _on_points_clicked(self, _item, points, *args):
         if len(points):
             index = points[-1].data()
             if index is not None:
-                self.point_clicked.emit(int(index))
+                if self._is_right_click(args):
+                    self.point_save_requested.emit(int(index))
+                else:
+                    self.point_clicked.emit(int(index))
+
+    def _on_marks_clicked(self, _item, points, *args):
+        if len(points) and points[-1].data():
+            self.mark_clicked.emit(str(points[-1].data()))

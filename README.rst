@@ -37,9 +37,15 @@ Extensions
   * **Movement keys**: W A S D are recognized by their position on the keyboard (Windows, Linux), so they are the
     Z Q S D keys of an AZERTY keyboard (the labels follow the input language). The arrows can be used instead, or
     both (setting *Move keys*).
-  * **Main view**: one line per group (number, name, horizontal value, vertical value, units), in columns of at
-    most 5 lines (10 groups: 5 + 5, 6 groups: 3 + 3). The values are aligned (fixed-width font, fixed decimals
-    given by the step). The selection is marked with ▶; its keys, steps and mode are in the detail line below.
+  * **Main view**: one line per group (colored number, name, horizontal value, vertical value, units), in columns
+    of at most 5 lines (10 groups: 5 + 5, 6 groups: 3 + 3). The values are aligned (fixed-width font, fixed
+    decimals given by the step). The selected line is on a light band, the others are dimmed; its keys (as key
+    caps), steps, mode and displacement since its selection (**Δ**, reset by selecting it again) are in the detail
+    line below. The ``?`` button shows the keys.
+  * **Saved positions** (target button): save the current position of the selected group under a name ("HA"), go
+    back to it later (confirmation, ``move_abs``), delete it. They are also named stars on the history (click one
+    to go there; right-click a point of the history to save it). Kept in
+    ``<PyMoDAQ local folder>/KeyboardJog/positions.json``, independent of the setups.
   * **Settings of each actuator** (*Settings > Actuators*, or right-click its line): *Pair* (``hidden``, ``auto``,
     1..9, 0), *Keys* (``horizontal``: A / D, ``vertical``: S / W; horizontal by default), *Step*, *Continuous* and
     *Headless*. An actuator on ``auto`` takes the first free number, a ``hidden`` one is not in the window (its
@@ -53,7 +59,8 @@ Extensions
   * **Step size** per actuator, in its units. ``+`` multiplies the step of the selection by the step factor (10 by
     default), ``-`` divides it.
   * **Step mode** (default): one key press = one relative move of one step. Holding the key does nothing more.
-  * **Continuous mode** (per actuator, ``cont.`` in the detail line): steps are repeated while the key is
+  * **Continuous mode** (per actuator, or all of them with *Motion > All continuous*; ``cont.`` in the detail
+    line): steps are repeated while the key is
     held, each one sent only once the previous move is done (moves are never queued), with an optional minimum
     interval. While held, **Shift** = step x10, **Ctrl** = step /10 (the stored step is unchanged).
   * **History** (graph button, hidden by default, on the right side): the end-of-move positions of the selected
@@ -123,6 +130,6 @@ To be discussed (not implemented)
 =================================
 
 Keyboard layout independence for the extra keys (physical keys / AZERTY-QWERTZ presets), axis inversion / swap per pair, emergency stop key, software limits and maximum step, lock during scans, display
-interactions (absolute position entry, mouse wheel), named position memory, gamepad support (the input
+interactions (absolute position entry, mouse wheel), gamepad support (the input
 handling is already "input source -> action"), true continuous motion (needs DAQ_Move evolutions), smart default
 pairs on first launch.

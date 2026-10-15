@@ -38,7 +38,7 @@ def test_one_line_per_group_in_two_columns_of_five(lab):
     panel = JogPanel(KeyboardInput())
     panel.set_rows(rows_of(groups, setup))
     assert panel.line_count() == 10
-    assert [panel.line_position(i) for i in range(10)] == [(1 + i % 5, i // 5) for i in range(10)]
+    assert [panel.line_position(i) for i in range(10)] == [(i % 5, i // 5) for i in range(10)]
     for name in names:
         panel.set_step(name, setup.step(name))
         panel.set_value(name, 12.3456)
@@ -46,6 +46,6 @@ def test_one_line_per_group_in_two_columns_of_five(lab):
     assert panel.value_text('Aperture X') == '12.346'     # step 0.1: 3 decimals
     assert panel.value_text('Sample Y') == '12.3456'      # step 0.01: 4 decimals
     panel.set_rows(rows_of(groups[:6], setup))            # 6 groups: 3 + 3
-    assert [panel.line_position(i) for i in range(6)] == [(1, 0), (2, 0), (3, 0), (1, 1), (2, 1), (3, 1)]
+    assert [panel.line_position(i) for i in range(6)] == [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]
     panel.set_rows(rows_of(groups[:4], setup))            # 4 groups: one column
     assert [panel.line_position(i)[1] for i in range(4)] == [0, 0, 0, 0]

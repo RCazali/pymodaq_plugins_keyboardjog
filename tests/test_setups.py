@@ -18,7 +18,7 @@ def sample_setup():
                     axes={'Stage X': HORIZONTAL, 'Stage Y': VERTICAL, 'Focus Z': VERTICAL},
                     pair_names={3: 'Sample'}, extra_keys=[ExtraKeys('Focus Z', 'PgDown', 'PgUp')],
                     steps={'Stage X': 0.001, 'Stage Y': 2.5, 'Focus Z': 1e-5},
-                    step_factor=5.0, always_on_top=False, show_history=True, min_interval_ms=120,
+                    all_continuous=True, step_factor=5.0, always_on_top=False, show_history=True, min_interval_ms=120,
                     stop_on_focus_loss=False, move_timeout_s=3.0)
 
 

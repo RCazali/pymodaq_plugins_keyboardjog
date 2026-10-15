@@ -294,6 +294,21 @@ def test_continuous_is_per_actuator(jog):
     assert spies['Stage X'].moves == [pytest.approx(0.01)]
 
 
+def test_all_continuous(jog):
+    ext, spies = jog
+    continuous(ext, ['Stage Y'])
+    ext.settings.child('general', 'all_continuous').setValue(True)
+    assert ext.controller.continuous == set(NAMES)
+    assert ext.panel.detail_text() == 'A/D step 0.01 mm cont.   S/W step 0.02 mm cont.'
+    press(ext, Qt.Key_D)
+    assert wait(lambda: len(spies['Stage X'].moves) >= 3, 5)
+    release(ext, Qt.Key_D)
+    idle(ext, spies)
+    assert not menu_action(ext.group_menu(1), 'Continuous').isEnabled()    # per actuator: overridden
+    ext.settings.child('general', 'all_continuous').setValue(False)       # back to the choice of each actuator
+    assert ext.controller.continuous == {'Stage Y'}
+
+
 def test_focus_loss_during_held_key(jog):
     ext, spies = jog
     continuous(ext)
@@ -530,6 +545,64 @@ def test_history_of_a_single_actuator_moved_from_elsewhere(jog, modules):
     assert [p[1] for p in ext.history.points(['Focus Z'])] == [pytest.approx(z0, abs=1e-3),
                                                                pytest.approx(z0 + 0.5, abs=1e-3)]
     assert ext.history_plot.point_count() == 2
+
+
+def test_saved_positions(jog, monkeypatch):
+    """Pin button: save the current position of the selected group under a name, go back to it; stars on the
+    history; right-click a history point to save it"""
+    ext, spies = jog
+    assert wait(lambda: all(ext.values.get(n) is not None for n in NAMES), 5)
+    x0, y0 = ext.values['Stage X'], ext.values['Stage Y']
+    monkeypatch.setattr(ext, '_ask_position_name', lambda group: 'HA')
+    menu = ext.positions_menu()
+    assert [a.text() for a in menu.actions() if not a.isSeparator()] == [
+        'Positions of Stage X / Stage Y', '(none saved yet)', 'Save current position…', 'Delete']
+    menu_action(menu, 'Save current position…').trigger()
+    assert ext.positions.get(['Stage X', 'Stage Y'], 'HA').values == pytest.approx([x0, y0])
+    assert 'HA' in ext.panel.message_label.text()
+    tap(ext, Qt.Key_D)
+    tap(ext, Qt.Key_W)
+    idle(ext, spies)
+    menu = ext.positions_menu()
+    monkeypatch.setattr(ext, '_ask', lambda title, text: True)          # confirmation
+    menu_action(menu, '★ HA').trigger()
+    idle(ext, spies)
+    assert spies['Stage X'].abs_moves == [pytest.approx(x0)] and spies['Stage Y'].abs_moves == [pytest.approx(y0)]
+    assert wait(lambda: abs(ext.values['Stage X'] - x0) < 1e-3 and abs(ext.values['Stage Y'] - y0) < 1e-3, 5)
+    ext.panel.show_history(True)                         # the saved positions are stars on the history
+    assert ext.history_plot.mark_names() == ['HA']
+    points = ext.history.points(['Stage X', 'Stage Y'])
+    index = next(i for i, p in enumerate(points) if abs(p[1] - x0 - 0.01) < 1e-3 and abs(p[2] - y0) < 1e-3)
+    assert ext.save_history_point(index, name='after D') == 'after D'  # right-click on a point of the history
+    assert ext.history_plot.mark_names() == ['HA', 'after D']
+    after_d = ext.positions.get(['Stage X', 'Stage Y'], 'after D').values
+    ext.history_plot.mark_clicked.emit('after D')         # click on a star: go there (confirmed)
+    idle(ext, spies)                                      # Y (already there) does not stay busy
+    assert spies['Stage X'].abs_moves[-1] == pytest.approx(after_d[0])
+    assert after_d[0] == pytest.approx(x0 + 0.01, abs=1e-3)
+    tap(ext, Qt.Key_2)                                    # positions belong to their group
+    assert [a.text() for a in ext.positions_menu().actions()][1] == '(none saved yet)'
+    tap(ext, Qt.Key_1)
+    ext.delete_position('HA', confirm=False)
+    assert ext.history_plot.mark_names() == ['after D']
+
+
+def test_delta_since_selection_and_selection_style(jog):
+    ext, spies = jog
+    assert ext.panel.detail_text() == 'A/D step 0.01 mm   S/W step 0.02 mm'
+    tap(ext, Qt.Key_D)
+    idle(ext, spies)                                      # (a press while it moves would be dropped)
+    tap(ext, Qt.Key_D)
+    idle(ext, spies)
+    assert wait(lambda: 'Δ +0.0200' in ext.panel.detail_text(), 5)
+    assert ext.panel.detail_text().startswith('A/D step 0.01 mm Δ +0.0200')
+    tap(ext, Qt.Key_1)                                    # selecting the group again resets Δ
+    assert ext.panel.detail_text() == 'A/D step 0.01 mm   S/W step 0.02 mm'
+    line, other = ext.panel._line_of['Stage X'], ext.panel._line_of['Focus Z']
+    assert line.selected and not other.selected
+    assert line.name.font().bold() and not other.name.font().bold()
+    assert ext.panel._band.isVisible()
+    assert line.number.styleSheet() != other.number.styleSheet()         # one color per group
 
 
 # ---------------------------------------------------------------------------------------------- settings and setups

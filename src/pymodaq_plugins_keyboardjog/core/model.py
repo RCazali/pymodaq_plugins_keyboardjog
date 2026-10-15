@@ -70,6 +70,7 @@ class JogSetup:
     axes: Dict[str, str] = field(default_factory=dict)           # actuator -> horizontal / vertical
     pair_names: Dict[int, str] = field(default_factory=dict)     # group number -> name of the pair
     extra_keys: List[ExtraKeys] = field(default_factory=list)
+    all_continuous: bool = False                                 # every actuator in continuous mode
     move_keys: str = WASD
     step_factor: float = 10.0
     always_on_top: bool = True
@@ -90,7 +91,8 @@ class JogSetup:
         return number if number in GROUP_NUMBERS else None
 
     def is_continuous(self, actuator: str) -> bool:
-        return actuator in self.continuous
+        """Continuous mode of an actuator: its own choice, or all of them with ``all_continuous``"""
+        return self.all_continuous or actuator in self.continuous
 
     def is_headless(self, actuator: str) -> bool:
         return actuator in self.headless

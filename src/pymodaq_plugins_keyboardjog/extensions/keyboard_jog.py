@@ -15,7 +15,8 @@ the keyboard while showing their position. Works without any configuration:
   each one after the previous move is done (never queued); Shift = step x10, Ctrl = step /10 while held.
 * ``+`` / ``-``: multiply / divide the step of the selection by the step factor (10 by default).
 * The graph button shows the history of the moves of the selected group (end-of-move points, click one to go back
-  there), hidden by default.
+  there), hidden by default. The pin button saves the current position of the selected group under a name ("HA")
+  and goes back to a saved one; the saved positions are also stars on the history.
 * Setups (all the settings) are saved / loaded by name from the settings.
 
 All the motion goes through the DAQ_Move modules of the Dashboard (``move_rel``, ``move_abs``, ``stop_motion``,
@@ -45,10 +46,11 @@ from pymodaq_plugins_keyboardjog.core.model import (AUTO, GROUP_NUMBERS, HIDDEN,
                                                      ExtraKeys, Group, JogSetup, build_groups, build_keymap,
                                                      direction_map, number_label)
 from pymodaq_plugins_keyboardjog.core.ports import ActuatorPort, actuator_modules, make_ports
+from pymodaq_plugins_keyboardjog.core.positions import POSITIONS_FILE, PositionStore
 from pymodaq_plugins_keyboardjog.core.setups import SetupStore, clean_name, default_folder
 from pymodaq_plugins_keyboardjog.ui import settings as ui_settings
 from pymodaq_plugins_keyboardjog.ui.history_plot import HistoryPlot
-from pymodaq_plugins_keyboardjog.ui.panel import GroupRow, JogPanel, value_decimals
+from pymodaq_plugins_keyboardjog.ui.panel import DetailItem, GroupRow, JogPanel, group_color, value_decimals
 
 logger = set_logger(get_module_name(__file__))
 plugin_config = PluginConfig()
@@ -63,7 +65,8 @@ HELP = ('Click this window: green border = the keys move the actuators, red = ke
         'the selection (A/D the horizontal actuator, S/W the vertical one).\n'
         'Right-click a line: pair, keys, continuous, headless, hide. Settings: the same, extra keys, setups.\n'
         '+ / - : multiply / divide the step of the selection. Continuous mode: Shift = step x10, Ctrl = step /10.\n'
-        'Graph button: history of the moves of the selection (click a point to go back there).')
+        'Graph button: history of the moves of the selection (click a point to go back there).\n'
+        'Pin button: save the position of the selection under a name, go back to a saved position.')
 
 COMPACT_SIZE = QtCore.QSize(330, 120)
 SETTINGS_SIZE = QtCore.QSize(420, 640)
@@ -92,6 +95,8 @@ class KeyboardJog(CustomExt):
         folder = default_folder(plugin_config)
         self.store = SetupStore(folder)
         self.history = MoveHistory(folder.parent / HISTORY_FILE)
+        self.positions = PositionStore(folder.parent / POSITIONS_FILE)
+        self._delta_ref: Dict[str, float] = {}  # values at the selection of the group (Δ of the detail line)
         self.keyboard = KeyboardInput(self)
         self.controller = MotionController(parent=self)
         self.controller.connect_source(self.keyboard)
@@ -181,7 +186,10 @@ class KeyboardJog(CustomExt):
         self.controller.move_started.connect(lambda name: self.panel.set_busy(name, True))
         self.controller.move_finished.connect(self._on_move_finished)
         self.history_plot.point_clicked.connect(self.go_back)
+        self.history_plot.point_save_requested.connect(self.save_history_point)
+        self.history_plot.mark_clicked.connect(self.go_to_position)
         self.history_plot.clear_requested.connect(self.clear_history)
+        self.panel.positions_requested.connect(self._show_positions_menu)
         actions = {('setup', 'load'): self._load_selected, ('setup', 'save'): self.save_setup,
                    ('setup', 'save_as'): self._save_as, ('setup', 'delete'): self._delete_selected,
                    ('extra', 'add'): self._add_extra_keys}
@@ -257,8 +265,10 @@ class KeyboardJog(CustomExt):
         self.history.set_settled(name, value)
         self.panel.set_value(name, value)
         group = self.selected_group_object()
-        if group is not None and name in group.moved and self.panel.history_visible():
-            self.history_plot.update_live(self._live_point(group))
+        if group is not None and name in group.actuators:
+            self._update_detail()
+            if name in group.moved and self.panel.history_visible():
+                self.history_plot.update_live(self._live_point(group))
 
     # ---------------------------------------------------------------- settings -> controller / view
     def _read_setup(self) -> JogSetup:
@@ -278,7 +288,7 @@ class KeyboardJog(CustomExt):
         """Read the settings tree and apply it: controller, key map, main view, window"""
         setup = self._read_setup()
         self.setup = setup
-        self.controller.continuous = [n for n in setup.continuous if n in self.ports]
+        self.controller.continuous = [n for n in self.ports if setup.is_continuous(n)]
         self.controller.min_interval_s = setup.min_interval_ms / 1000
         self.controller.move_timeout_s = setup.move_timeout_s
         for name in self.ports:
@@ -305,7 +315,8 @@ class KeyboardJog(CustomExt):
             self.panel.set_step(name, self.controller.step(name))
         self.panel.set_rows([GroupRow(index, group.label, group.title, group.horizontal, group.vertical,
                                       {a: units.get(a, '') for a in group.actuators},
-                                      {a for a in group.actuators if setup.is_headless(a)}, self._line_tooltip(group))
+                                      {a for a in group.actuators if setup.is_headless(a)}, self._line_tooltip(group),
+                                      self.group_color(index))
                              for index, group in enumerate(self.groups)])
         for name in self.ports:
             self.panel.set_busy(name, self.controller.is_busy(name))
@@ -332,13 +343,22 @@ class KeyboardJog(CustomExt):
         group = self.selected_group_object()
         return list(group.actuators) if group is not None else []
 
+    def group_color(self, index: int) -> str:
+        """Color of a group: by its number (stable when the groups change), by its index if it has none"""
+        group = self.groups[index] if 0 <= index < len(self.groups) else None
+        return group_color(group.number - 1 if group is not None and group.number else index)
+
     def select_group(self, index: int):
-        """Select the group of this index in the main view: the movement keys and +/- act on it"""
+        """Select the group of this index in the main view: the movement keys and +/- act on it. Selecting it
+        again (or a new group) resets its displacement Δ"""
         if not 0 <= index < len(self.groups):
             return
+        self._delta_ref = {}
         if index != self.selected:
             self.selected = index
             self._apply_selection()
+        else:
+            self._update_detail()
 
     def select_number(self, number: int):
         """Select the group of this number (key 1..9, 10 for the 0 key)"""
@@ -361,32 +381,48 @@ class KeyboardJog(CustomExt):
         self._update_detail()
         self._refresh_history_view(refit=True)
 
-    def _actuator_keys(self, group: Group, name: str) -> str:
-        """Keys moving this actuator: the movement keys if its group is selected, its extra keys"""
+    def _actuator_keys(self, group: Group, name: str) -> List[List[str]]:
+        """Key groups moving this actuator: the movement keys if its group is selected, its extra keys"""
         k = self._labels
-        parts = []
+        keys = []
         if group is self.selected_group_object():
             if name == group.horizontal:
-                parts.append(f'{k[LEFT]}/{k[RIGHT]}')
+                keys.append([k[LEFT], k[RIGHT]])
             elif name == group.vertical:
-                parts.append(f'{k[DOWN]}/{k[UP]}')
+                keys.append([k[DOWN], k[UP]])
         if name in self._extra_labels:
-            parts.append('/'.join(x or '–' for x in self._extra_labels[name]))
-        return ' '.join(parts)
+            keys.append([x or '–' for x in self._extra_labels[name]])
+        return keys
 
-    def _actuator_detail(self, group: Group, name: str) -> str:
+    def _delta_text(self, name: str) -> str:
+        """Displacement since the selection of the group ('' while it did not move)"""
+        value = self.values.get(name)
+        if value is None:
+            return ''
+        reference = self._delta_ref.setdefault(name, value)
+        delta = value - reference
+        decimals = step_decimals(self.controller.step(name))
+        text = f'{delta:+.{decimals}f}'
+        return '' if float(text) == 0 else f'Δ {text}'
+
+    def _actuator_detail(self, group: Group, name: str) -> DetailItem:
         unit = self.ports[name].units() if name in self.ports else ''
-        text = f'{self._actuator_keys(group, name)} step {self.controller.step(name):.4g} {unit}'.strip()
-        return text + (' cont.' if self.controller.is_continuous(name) else '')
+        parts = [f'step {self.controller.step(name):.4g} {unit}'.strip()]
+        if self.controller.is_continuous(name):
+            parts.append('cont.')
+        delta = self._delta_text(name)
+        if delta:
+            parts.append(delta)
+        return DetailItem(self._actuator_keys(group, name), ' '.join(parts))
 
     def _update_detail(self):
-        """Detail line of the selected group: keys, step and mode of each of its actuators"""
+        """Detail line of the selected group: keys, step, mode and Δ of each of its actuators"""
         group = self.selected_group_object()
         if group is None:
-            self.panel.set_detail('')
+            self.panel.set_detail([])
             return
         names = group.moved + [a for a in group.actuators if a not in group.moved and a in self._extra_labels]
-        self.panel.set_detail('   '.join(self._actuator_detail(group, a) for a in names))
+        self.panel.set_detail([self._actuator_detail(group, a) for a in names])
 
     def _line_tooltip(self, group: Group) -> str:
         lines = []
@@ -446,11 +482,15 @@ class KeyboardJog(CustomExt):
             action = sub.addAction(f'{axis} ({keys})', lambda a=axis: self.set_actuator_setting(name, 'axis', a))
             action.setCheckable(True)
             action.setChecked(self.setup.axis(name) == axis)
-        for setting, title, value in (('continuous', 'Continuous', self.setup.is_continuous(name)),
+        for setting, title, value in (('continuous', 'Continuous', name in self.setup.continuous),
                                       ('headless', 'Headless (no value shown)', self.setup.is_headless(name))):
             action = menu.addAction(title, lambda s=setting, v=value: self.set_actuator_setting(name, s, not v))
             action.setCheckable(True)
             action.setChecked(value)
+            if setting == 'continuous' and self.setup.all_continuous:
+                action.setChecked(True)
+                action.setEnabled(False)
+                action.setToolTip('Settings > Motion > All continuous is on')
         menu.addAction('Hide', lambda: self.set_actuator_setting(name, 'pair', HIDDEN))
 
     def set_actuator_setting(self, name: str, setting: str, value):
@@ -598,10 +638,32 @@ class KeyboardJog(CustomExt):
             orient = 'h' if moved[0] == group.horizontal else 'v'
         units = [self.ports[a].units() if a in self.ports else '' for a in moved]
         decimals = [step_decimals(self.controller.step(a)) for a in moved]
-        self.history_plot.set_group(group.title, orient, moved, units, decimals)
+        self.history_plot.set_group(group.title, orient, moved, units, decimals, self.group_color(self.selected))
+        self.history_plot.set_marks([(p.name, p.values) for p in self.positions.list(moved)])
         self.history_plot.set_points(self.history.points(moved), self._live_point(group))
         if refit:
             self.history_plot.fit()
+
+    def _move_group_to(self, group: Group, values, what: str, confirm: bool) -> bool:
+        """Absolute move of the actuators of the group (after confirmation): back in the history, to a saved
+        position"""
+        lines = []
+        for actuator, value in zip(group.moved, values):
+            if actuator not in self.ports:
+                continue
+            decimals = step_decimals(self.controller.step(actuator))
+            current = self.values.get(actuator)
+            start = f'{current:.{decimals}f} → ' if current is not None else '→ '
+            lines.append(f'{actuator}: {start}{value:.{decimals}f} {self.ports[actuator].units()}'.rstrip())
+        if any(self.setup.is_headless(a) for a in group.moved):
+            lines.append('\n(headless actuator: the position is the one counted by its controller)')
+        self.controller.release_all(stop=False)
+        ok = not confirm or self._ask('Go to position', f'Move {group.title} to {what}?\n\n' + '\n'.join(lines))
+        if ok:
+            for actuator, value in zip(group.moved, values):
+                self.controller.move_to(actuator, value)
+        self.panel.setFocus(Qt.OtherFocusReason)
+        return ok
 
     def go_back(self, index: int, confirm: bool = True) -> bool:
         """Move the selected group back to the point ``index`` of its history (after confirmation)"""
@@ -612,16 +674,92 @@ class KeyboardJog(CustomExt):
         if not 0 <= index < len(points):
             return False
         point = points[index]
-        text = '\n'.join(f'{a} → {v:.{step_decimals(self.controller.step(a))}f} {self.ports[a].units()}'.rstrip()
-                         for a, v in zip(group.moved, point[1:]) if a in self.ports)
         when = time.strftime('%d/%m %H:%M:%S', time.localtime(point[0])) if point[0] else '?'
-        self.controller.release_all(stop=False)
-        ok = not confirm or self._ask('Go back', f"Move {group.title} back to point #{index} ({when})?\n\n{text}")
-        if ok:
-            for actuator, value in zip(group.moved, point[1:]):
-                self.controller.move_to(actuator, value)
+        return self._move_group_to(group, point[1:], f'point #{index} of its history ({when})', confirm)
+
+    # ---------------------------------------------------------------- saved positions
+    def _show_positions_menu(self, global_pos: QtCore.QPoint):
+        menu = self.positions_menu()
+        menu.exec(global_pos) if hasattr(menu, 'exec') else menu.exec_(global_pos)
         self.panel.setFocus(Qt.OtherFocusReason)
-        return ok
+
+    def positions_menu(self) -> QtWidgets.QMenu:
+        """Menu of the pin button: the saved positions of the selected group (click: go there), save, delete"""
+        menu = QtWidgets.QMenu(self.panel)
+        group = self.selected_group_object()
+        if group is None or not group.moved:
+            menu.addAction('No group selected').setEnabled(False)
+            return menu
+        saved = self.positions.list(group.moved)
+        title = menu.addAction(f'Positions of {group.title}')
+        title.setEnabled(False)
+        for position in saved:
+            menu.addAction(f'★ {position.name}', lambda n=position.name: self.go_to_position(n))
+        if not saved:
+            menu.addAction('(none saved yet)').setEnabled(False)
+        menu.addSeparator()
+        menu.addAction('Save current position…', lambda: self.save_position())
+        delete = menu.addMenu('Delete')
+        delete.setEnabled(bool(saved))
+        for position in saved:
+            delete.addAction(position.name, lambda n=position.name: self.delete_position(n))
+        return menu
+
+    def _ask_position_name(self, group: Group) -> Optional[str]:
+        default = f'Position {len(self.positions.list(group.moved)) + 1}'
+        text, ok = QtWidgets.QInputDialog.getText(self.mainwindow, 'Save position',
+                                                  f'Name of the position of {group.title}:', text=default)
+        return text.strip() if ok and text.strip() else None
+
+    def _save_group_position(self, group: Group, values, name: Optional[str]) -> Optional[str]:
+        if any(v is None for v in values):
+            self.show_message('Position unknown: wait for the values of the actuators', warning=True)
+            return None
+        if name is None:
+            name = self._ask_position_name(group)
+            if name is None:
+                self.panel.setFocus(Qt.OtherFocusReason)
+                return None
+            if name in self.positions.names(group.moved) and \
+                    not self._ask('Save position', f"Replace the position '{name}' of {group.title}?"):
+                self.panel.setFocus(Qt.OtherFocusReason)
+                return None
+        self.positions.save(group.moved, name, values)
+        self._refresh_history_view()
+        self.show_message(f"Position '{name}' of {group.title} saved")
+        self.panel.setFocus(Qt.OtherFocusReason)
+        return name
+
+    def save_position(self, name: Optional[str] = None) -> Optional[str]:
+        """Save the current position of the selected group under a name (asked if not given)"""
+        group = self.selected_group_object()
+        if group is None or not group.moved:
+            return None
+        return self._save_group_position(group, self._live_point(group), name)
+
+    def save_history_point(self, index: int, name: Optional[str] = None) -> Optional[str]:
+        """Save the point ``index`` of the history of the selected group as a named position"""
+        group = self.selected_group_object()
+        points = self.history.points(group.moved) if group is not None else []
+        if not 0 <= index < len(points):
+            return None
+        return self._save_group_position(group, points[index][1:], name)
+
+    def go_to_position(self, name: str, confirm: bool = True) -> bool:
+        group = self.selected_group_object()
+        position = self.positions.get(group.moved, name) if group is not None else None
+        if position is None:
+            return False
+        return self._move_group_to(group, position.values, f"'{name}'", confirm)
+
+    def delete_position(self, name: str, confirm: bool = True):
+        group = self.selected_group_object()
+        if group is None or name not in self.positions.names(group.moved):
+            return
+        if not confirm or self._ask('Delete position', f"Delete the position '{name}' of {group.title}?"):
+            self.positions.delete(group.moved, name)
+            self._refresh_history_view()
+        self.panel.setFocus(Qt.OtherFocusReason)
 
     def clear_history(self, confirm: bool = True):
         group = self.selected_group_object()

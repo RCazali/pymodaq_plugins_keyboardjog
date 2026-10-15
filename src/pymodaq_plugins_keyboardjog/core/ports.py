@@ -44,8 +44,9 @@ class ActuatorPort(ABC):
     def move_rel(self, delta: float):
         """Start a relative move, its end is signalled through ``on_done``"""
 
-    def move_abs(self, value: float):
-        """Start an absolute move (go back to a point of the history), its end is signalled through ``on_done``"""
+    def move_abs(self, value: float) -> Optional[bool]:
+        """Start an absolute move (go back to a point of the history), its end is signalled through ``on_done``.
+        Returns False if no move was started (already at the target: no move-done will come)"""
         raise NotImplementedError(f'{self.name}: no absolute move')
 
     @abstractmethod
@@ -117,8 +118,14 @@ class DAQMovePort(ActuatorPort):
     def move_rel(self, delta: float):
         self.module.move_rel(float(delta))
 
-    def move_abs(self, value: float):
+    def move_abs(self, value: float) -> Optional[bool]:
+        """DAQ_Move ignores a target equal to its current value (no move, no move-done signal); when it accepts the
+        move it clears move_done_bool at once"""
         self.module.move_abs(float(value))
+        try:
+            return not bool(self.module.move_done_bool)
+        except Exception:  # pragma: no cover
+            return None
 
     def stop(self):
         self.module.stop_motion()

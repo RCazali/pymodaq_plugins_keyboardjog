@@ -24,7 +24,7 @@ SETUP_VERSION = 3
 LAST_SETUP_FILE = 'last_setup.txt'
 EXTENSION_FOLDER = 'KeyboardJog'  # same name as CustomApp.get_local_folder() of PyMoDAQ >= 5.3
 
-_GENERAL = (('move_keys', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'), ('show_history', 'bool'),
+_GENERAL = (('all_continuous', 'bool'), ('move_keys', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'), ('show_history', 'bool'),
             ('min_interval_ms', 'int'), ('stop_on_focus_loss', 'bool'), ('move_timeout_s', 'float'))
 
 
@@ -52,7 +52,7 @@ def setup_to_parameter(setup: JogSetup) -> Parameter:
             {'name': 'actuator', 'type': 'str', 'value': name},
             {'name': 'hidden', 'type': 'bool', 'value': name in setup.hidden},
             {'name': 'headless', 'type': 'bool', 'value': setup.is_headless(name)},
-            {'name': 'continuous', 'type': 'bool', 'value': setup.is_continuous(name)},
+            {'name': 'continuous', 'type': 'bool', 'value': name in setup.continuous},
             {'name': 'step', 'type': 'float', 'value': float(setup.steps.get(name, 0.0))},   # 0: default
             {'name': 'pair', 'type': 'int', 'value': setup.number(name) or 0},              # 0: auto
             {'name': 'axis', 'type': 'str', 'value': setup.axes.get(name, '')}]})

@@ -212,10 +212,13 @@ class MotionController(QtCore.QObject):
                 self.message.emit(f'{name} is moved by something else: key ignored')
             return False
         try:
-            move(port)
+            started = move(port)
         except Exception as e:
             logger.warning(f'{name}: {what} failed: {e}')
             self.message.emit(f'{name}: move failed ({e})')
+            return False
+        if started is False:                  # already at the target: no move, no move-done to wait for
+            logger.debug(f'{name}: {what}: already there')
             return False
         state.pending = True
         state.sent_at = self._clock()
