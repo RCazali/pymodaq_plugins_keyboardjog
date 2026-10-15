@@ -38,14 +38,13 @@ def hint_text(move_keys_label: str) -> str:
     return f'1-9, 0 or click: select   {move_keys_label}: move   + / -: step   right-click: options'
 
 
-def history_icon(shown: bool) -> Optional[QtGui.QIcon]:
-    """The 'graph' icon of the DAQ_Move modules (PyMoDAQ 5.3 Material icon, 5.1 png), None if not found"""
+def pymodaq_icon(names: Iterable[str], color: str) -> Optional[QtGui.QIcon]:
+    """The first PyMoDAQ icon found (5.3 Material icons, in this color; 5.1 png icons), None if none is found"""
     try:
         from pymodaq_gui.managers.action_manager import create_icon
     except ImportError:  # pragma: no cover
         return None
-    color = ARMED_COLOR if shown else 'gray'
-    for name in ('bid_landscape' if shown else 'bid_landscape_disabled', 'graph'):
+    for name in names:
         for kwargs in ({'icon_color': color}, {}):        # 5.1: no color argument
             try:
                 icon = create_icon(name, **kwargs)
@@ -54,6 +53,17 @@ def history_icon(shown: bool) -> Optional[QtGui.QIcon]:
             if icon is not None and not icon.isNull():
                 return icon
     return None
+
+
+def history_icon(shown: bool) -> Optional[QtGui.QIcon]:
+    """The 'graph' icon of the DAQ_Move modules"""
+    return pymodaq_icon(('bid_landscape' if shown else 'bid_landscape_disabled', 'graph'),
+                        ARMED_COLOR if shown else 'gray')
+
+
+def close_icon() -> Optional[QtGui.QIcon]:
+    """The red 'Quit' icon of the PyMoDAQ 5.3 windows ('close2' in 5.1)"""
+    return pymodaq_icon(('cancel', 'close2'), DISARMED_COLOR)
 
 
 def grid_shape(count: int, max_lines: int = MAX_LINES) -> Tuple[int, int]:
@@ -208,19 +218,24 @@ class JogPanel(QtWidgets.QFrame):
         self.settings_button.setCheckable(True)
         self.settings_button.setAutoRaise(True)
         self.settings_button.setToolTip('Show / hide the settings')
-        self.close_button = QtWidgets.QToolButton()
-        self.close_button.setText('✕')
+        self.close_button = QtWidgets.QToolButton()       # first on the left, red, as the Quit of PyMoDAQ 5.3
         self.close_button.setAutoRaise(True)
         self.close_button.setToolTip('Close Keyboard Jog (the moves it started are stopped)')
+        icon = close_icon()
+        if icon is not None:
+            self.close_button.setIcon(icon)
+        else:
+            self.close_button.setText('✕')
+            self.close_button.setStyleSheet(f'color: {DISARMED_COLOR}; font-weight: bold;')
         for w in (self.on_top_check, self.history_button, self.settings_button, self.close_button):
             w.setFocusPolicy(Qt.NoFocus)     # clicking them must not take the focus from the panel
+        header.addWidget(self.close_button)
         header.addWidget(self.state_label)
         header.addStretch()
         header.addWidget(self.mode_label)
         header.addWidget(self.on_top_check)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
-        header.addWidget(self.close_button)
         layout.addLayout(header)
 
         body = QtWidgets.QHBoxLayout()
