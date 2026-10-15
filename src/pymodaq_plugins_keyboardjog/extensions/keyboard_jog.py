@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 Keyboard Jog - PyMoDAQ Dashboard extension: a tiny, always-on-top window to move the Dashboard actuators with
-the keyboard (arrow keys for pairs of axes, chosen keys for single actuators) while showing their position.
+the keyboard while showing their position. Works without any configuration:
 
 * Green border: the window has the keyboard focus, the keys move the actuators.
   Red border: the focus is elsewhere, every key is ignored (and the actuators it was moving are stopped).
+* Every actuator has a number: keys 1..9 (or a click on its row) select it, the arrow keys move the selection.
+  Two actuators can be paired in the settings (one number: Left/Right move the first, Down/Up the second), and an
+  actuator can get extra keys of its own (e.g. PgDown / PgUp), active whatever the selection.
 * Step mode (default): one key press = one relative step. Continuous mode: steps repeated while the key is held,
   each one after the previous move is done (never queued); Shift = step x10, Ctrl = step /10 while held.
-* ``+`` / ``-``: multiply / divide the step size by the step factor (10 by default).
-* Setups (displayed actuators, bindings, steps, options) are saved / loaded by name from the settings.
+* ``+`` / ``-``: multiply / divide the step of the selection by the step factor (10 by default).
+* Setups (displayed actuators, pairs, extra keys, steps, options) are saved / loaded by name from the settings.
 
 All the motion goes through the DAQ_Move modules of the Dashboard (``move_rel``, ``stop_motion``, their signals),
 see ``core/ports.py``.
@@ -30,8 +33,8 @@ from pymodaq_plugins_keyboardjog.utils import Config as PluginConfig
 from pymodaq_plugins_keyboardjog.core.controller import MotionController
 from pymodaq_plugins_keyboardjog.core.input import KeyboardInput
 from pymodaq_plugins_keyboardjog.core.keys import key_label, key_name, normalize_key_name
-from pymodaq_plugins_keyboardjog.core.model import (CONTINUOUS_MODE, SCOPE_LAST, Binding, JogSetup, build_keymap,
-                                                     group_members)
+from pymodaq_plugins_keyboardjog.core.model import (CONTINUOUS_MODE, Binding, JogSetup, arrow_keymap, build_groups,
+                                                     build_keymap)
 from pymodaq_plugins_keyboardjog.core.ports import ActuatorPort, actuator_modules, make_ports
 from pymodaq_plugins_keyboardjog.core.setups import SetupStore, clean_name, default_folder
 from pymodaq_plugins_keyboardjog.ui import settings as ui_settings
@@ -46,8 +49,10 @@ CLASS_NAME = 'KeyboardJog'
 Qt = QtCore.Qt
 
 HELP = ('Click this window: green border = the keys move the actuators, red = keys ignored.\n'
-        'Arrows: pair of actuators (Left/Right: first, Down/Up: second). Other keys: see the settings.\n'
-        '+ / - : multiply / divide the step. Continuous mode: Shift = step x10, Ctrl = step /10 while held.')
+        '1-9 or a click on a row: select an actuator (or a pair). Arrows: move the selection\n'
+        '(pair: Left/Right the first actuator, Down/Up the second one).\n'
+        '+ / - : multiply / divide the step of the selection. Continuous mode: Shift = step x10, Ctrl = step /10.\n'
+        'Settings: pairs, extra keys, steps, displayed actuators, setups.')
 
 COMPACT_SIZE = QtCore.QSize(330, 120)
 SETTINGS_SIZE = QtCore.QSize(420, 640)
@@ -72,9 +77,13 @@ class KeyboardJog(CustomExt):
         self.values: Dict[str, Optional[float]] = {}
         self.setup = JogSetup()
         self.setup_name = ''
+        self.groups: List[List[str]] = []
+        self.selected = 0                       # index of the selected group
+        self._extra_keys: Dict[str, List[str]] = {}
         self._dirty = False
+        self._auto_display = True               # no setup yet: every actuator is displayed
         self.panel = JogPanel(self.keyboard)
-        self.panel.state_label.setToolTip(HELP)
+        self.panel.setToolTip(HELP)
         self._message_timer = QtCore.QTimer(self)
         self._message_timer.setSingleShot(True)
         self._message_timer.timeout.connect(lambda: self.panel.show_message(''))
@@ -131,8 +140,9 @@ class KeyboardJog(CustomExt):
         self.panel.settings_toggled.connect(self._on_settings_toggled)
         self.panel.always_on_top_toggled.connect(self._on_top_checkbox)
         self.keyboard.step_scale_requested.connect(self.scale_steps)
+        self.keyboard.select_requested.connect(lambda number: self.select_group(number - 1))
+        self.panel.row_clicked.connect(self.select_actuator)
         self.controller.step_changed.connect(self._on_step_changed)
-        self.controller.active_group_changed.connect(lambda _: self._update_highlight())
         self.controller.message.connect(lambda text: self.show_message(text, warning=True))
         actions = {('setup', 'load'): self._load_selected, ('setup', 'save'): self.save_setup,
                    ('setup', 'save_as'): self._save_as, ('setup', 'delete'): self._delete_selected,
@@ -146,6 +156,8 @@ class KeyboardJog(CustomExt):
         path = self.settings.childPath(param) or []
         if not path or path[0] == 'setup':
             return
+        if path[0] == 'actuators' and param.name() == 'display':
+            self._auto_display = False
         if path[0] == 'bindings' and param.name().startswith(('minus', 'plus')):
             normalized = normalize_key_name(param.value())
             if normalized != param.value():
@@ -190,6 +202,8 @@ class KeyboardJog(CustomExt):
         for name, port in self.ports.items():
             port.on_value = lambda value, n=name: self._on_value(n, value)
         self.controller.set_ports(self.ports)
+        if self._auto_display:
+            setup.displayed = list(self.ports)
         restricted, _ = setup.restricted_to(list(self.ports))
         self._write_tree(restricted)
         self.apply_settings()
@@ -227,38 +241,72 @@ class KeyboardJog(CustomExt):
             self.controller.steps[name] = setup.step(name)
         keymap, problems = build_keymap(setup)
         self.keyboard.set_keymap(keymap)
+        selected_before = self.selected_group()
+        self.groups, group_problems = build_groups(setup, list(self.ports))
+        problems = group_problems + problems
         self._loading = True
         try:
             ui_settings.set_problems(self.settings, problems)
         finally:
             self._loading = False
 
-        keys: Dict[str, List[str]] = {}
+        self._extra_keys: Dict[str, List[str]] = {}
         for key, action in keymap.items():
-            keys.setdefault(action.actuator, ['', ''])[0 if action.direction < 0 else 1] = \
+            self._extra_keys.setdefault(action.actuator, ['', ''])[0 if action.direction < 0 else 1] = \
                 key_label(key_name(key))
-        shown = setup.shown_actuators(list(self.ports))
         units = self.units()
-        self.panel.set_rows([RowInfo(name, units.get(name, ''),
-                                     '/'.join(k or '–' for k in keys[name]) if name in keys else '')
-                             for name in shown])
-        for name in shown:
-            self.panel.set_value(name, self.values.get(name))
-            self.panel.set_step(name, self.controller.step(name))
+        rows = []
+        for index, group in enumerate(self.groups):
+            for j, name in enumerate(group):
+                number = str(index + 1) if j == 0 and index < 9 else ''
+                rows.append(RowInfo(name, units.get(name, ''), number))
+        self.panel.set_rows(rows)
+        for row in rows:
+            self.panel.set_value(row.name, self.values.get(row.name))
+            self.panel.set_step(row.name, self.controller.step(row.name))
         self.panel.set_mode_text('continuous' if setup.motion_mode == CONTINUOUS_MODE else 'step')
-        self._update_highlight()
+        self.selected = next((i for i, g in enumerate(self.groups) if selected_before and g[0] in selected_before), 0)
+        self._apply_selection()
         self.panel.on_top_check.blockSignals(True)
         self.panel.on_top_check.setChecked(setup.always_on_top)
         self.panel.on_top_check.blockSignals(False)
         self.apply_always_on_top(setup.always_on_top)
         if problems:
-            self.show_message('Key binding problems: see the settings', warning=True)
+            self.show_message('Problems in the pairs / extra keys: see the settings', warning=True)
 
-    def _update_highlight(self):
-        if self.setup.step_scope == SCOPE_LAST:
-            self.panel.set_highlight(group_members(self.setup, self.controller.active_group))
-        else:
-            self.panel.set_highlight([])
+    # ---------------------------------------------------------------- selection
+    def selected_group(self) -> List[str]:
+        if 0 <= self.selected < len(self.groups):
+            return list(self.groups[self.selected])
+        return []
+
+    def select_group(self, index: int):
+        """Select the group of this index (0 = number 1): the arrow keys and +/- act on it"""
+        if not 0 <= index < len(self.groups):
+            self.show_message(f'No actuator number {index + 1}')
+            return
+        if index != self.selected:
+            self.selected = index
+            self._apply_selection()
+
+    def select_actuator(self, name: str):
+        for index, group in enumerate(self.groups):
+            if name in group:
+                self.select_group(index)
+                return
+
+    def _apply_selection(self):
+        group = self.selected_group()
+        self.keyboard.set_arrow_map(arrow_keymap(group, self.selected))
+        self.panel.set_selected(group)
+        for g in self.groups:
+            for j, name in enumerate(g):
+                parts = []
+                if g == group:
+                    parts.append('←→ ↓↑' if len(g) == 1 else ('←/→' if j == 0 else '↓/↑'))
+                if name in self._extra_keys:
+                    parts.append('/'.join(k or '–' for k in self._extra_keys[name]))
+                self.panel.set_keys(name, '  '.join(parts))
 
     def _on_step_changed(self, name: str, value: float):
         self.panel.set_step(name, value)
@@ -271,15 +319,9 @@ class KeyboardJog(CustomExt):
         self._set_dirty(True)
 
     def scale_steps(self, sign: int):
-        """'+' (sign > 0) / '-' (sign < 0): scale the steps of the actuators in the scope"""
-        if self.setup.step_scope == SCOPE_LAST:
-            names = group_members(self.setup, self.controller.active_group)
-            if not names:
-                self.show_message('+/- act on the last binding used: move an actuator first')
-                return
-        else:
-            names = self.setup.shown_actuators(list(self.ports))
-        self.controller.scale_steps(sign, self.setup.step_factor, [n for n in names if n in self.ports])
+        """'+' (sign > 0) / '-' (sign < 0): scale the steps of the selected group"""
+        names = [n for n in self.selected_group() if n in self.ports]
+        self.controller.scale_steps(sign, self.setup.step_factor, names)
 
     def show_message(self, text: str, warning: bool = False, duration_ms: int = 4000):
         self.panel.show_message(text, warning)
@@ -290,8 +332,7 @@ class KeyboardJog(CustomExt):
 
     # ---------------------------------------------------------------- bindings
     def _add_pair(self):
-        ui_settings.add_binding(self.settings, ui_settings.new_pair(ui_settings.read_setup(self.settings)),
-                                list(self.ports), self._remove_binding)
+        ui_settings.add_binding(self.settings, Binding.pair(), list(self.ports), self._remove_binding)
         self.apply_settings()
         self._set_dirty(True)
 
@@ -349,6 +390,7 @@ class KeyboardJog(CustomExt):
             setup = self.store.load(name)
         restricted, warnings = setup.restricted_to(list(self.ports))
         self.controller.release_all(stop=False)
+        self._auto_display = False
         self._write_tree(restricted)
         self.setup_name = clean_name(name)
         self.store.last = self.setup_name
@@ -370,6 +412,7 @@ class KeyboardJog(CustomExt):
             self.show_message("Type a name in 'New name' and click 'Save as'", warning=True)
             return None
         self.setup_name = self.store.save(name, ui_settings.read_setup(self.settings))
+        self._auto_display = False
         self.store.last = self.setup_name
         self._set_dirty(False)
         self._refresh_saved_list()

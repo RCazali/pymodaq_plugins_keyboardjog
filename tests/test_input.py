@@ -83,6 +83,29 @@ def test_reset_forgets_held_keys(kb):
     assert log == []
 
 
+def test_digits_select_groups(kb):
+    kb, log = kb
+    selections = []
+    kb.select_requested.connect(selections.append)
+    assert kb.key_press(key_event('press', Qt.Key_3))
+    assert kb.key_press(key_event('press', Qt.Key_1, Qt.KeypadModifier))
+    assert kb.key_press(key_event('press', Qt.Key_9, auto_repeat=True))       # auto-repeat ignored
+    assert selections == [3, 1]
+    assert not kb.key_press(key_event('press', Qt.Key_0))
+
+
+def test_arrow_map_follows_the_selection(kb):
+    kb, log = kb
+    from pymodaq_plugins_keyboardjog.core.model import arrow_keymap
+    kb.set_keymap({})
+    kb.set_arrow_map(arrow_keymap(['Y'], 1))
+    kb.key_press(key_event('press', Qt.Key_Up))
+    kb.set_arrow_map(arrow_keymap(['Z'], 2))                                  # held arrow released
+    assert log[-2:] == [('press', 'Y', 1), ('release', 'Y', 1)]
+    kb.key_press(key_event('press', Qt.Key_Left))
+    assert log[-1] == ('press', 'Z', -1)
+
+
 def test_new_keymap_releases_held_keys(kb):
     kb, log = kb
     kb.key_press(key_event('press', Qt.Key_Right))

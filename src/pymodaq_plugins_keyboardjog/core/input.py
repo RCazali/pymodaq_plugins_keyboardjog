@@ -15,9 +15,16 @@ from typing import Dict
 from qtpy import QtCore
 
 from .actions import InputSource, MoveAction
-from .keys import CONTROL_KEY, MODIFIER_KEYS, SHIFT_KEY, STEP_DOWN_KEYS, STEP_UP_KEYS, key_int
+from .keys import CONTROL_KEY, MODIFIER_KEYS, SHIFT_KEY, STEP_DOWN_KEYS, STEP_UP_KEYS, digit_of, key_int
 
 Qt = QtCore.Qt
+
+
+def _scan_code(event) -> int:
+    try:
+        return int(event.nativeScanCode())
+    except (AttributeError, TypeError, ValueError):
+        return 0
 
 MODIFIER_FACTOR = 10.0  # fixed by the specification: Shift = step x10, Ctrl = step /10
 
@@ -44,6 +51,7 @@ class KeyboardInput(InputSource):
     def __init__(self, parent: QtCore.QObject = None):
         super().__init__(parent)
         self._keymap: Dict[int, MoveAction] = {}
+        self._arrows: Dict[int, MoveAction] = {}
         self._held: Dict[int, MoveAction] = {}
         self._multiplier = 1.0
 
@@ -56,18 +64,31 @@ class KeyboardInput(InputSource):
         return self._multiplier
 
     def set_keymap(self, keymap: Dict[int, MoveAction]):
-        """New bindings: the keys currently held are released first"""
+        """New extra keys: the keys currently held are released first"""
         self.release_all()
         self._keymap = dict(keymap)
 
-    def handles(self, key: int) -> bool:
-        return key in self._keymap or key in STEP_UP_KEYS or key in STEP_DOWN_KEYS or key in MODIFIER_KEYS
+    def set_arrow_map(self, arrows: Dict[int, MoveAction]):
+        """Arrow keys of the newly selected group: the arrows currently held are released first"""
+        for key in list(self._held):
+            if key in self._arrows:
+                self.move_released.emit(self._held.pop(key))
+        self._arrows = dict(arrows)
+
+    def _action(self, key: int):
+        action = self._arrows.get(key)
+        return action if action is not None else self._keymap.get(key)
+
+    def handles(self, key: int, scan_code: int = 0) -> bool:
+        return (self._action(key) is not None or key in STEP_UP_KEYS or key in STEP_DOWN_KEYS
+                or key in MODIFIER_KEYS or digit_of(key, scan_code) is not None)
 
     def key_press(self, event) -> bool:
         """Process a key press, return True if the key belongs to the extension (event consumed)"""
         key = key_int(event.key())
+        scan_code = _scan_code(event)
         if event.isAutoRepeat():
-            return self.handles(key)
+            return self.handles(key, scan_code)
         self._set_multiplier(modifier_multiplier(event, pressed=True))
         if key in STEP_UP_KEYS:
             self.step_scale_requested.emit(+1)
@@ -75,24 +96,29 @@ class KeyboardInput(InputSource):
         if key in STEP_DOWN_KEYS:
             self.step_scale_requested.emit(-1)
             return True
-        action = self._keymap.get(key)
+        action = self._action(key)
         if action is not None:
             if key not in self._held:
                 self._held[key] = action
                 self.move_pressed.emit(action)
             return True
+        number = digit_of(key, scan_code)
+        if number is not None:
+            self.select_requested.emit(number)
+            return True
         return key in MODIFIER_KEYS
 
     def key_release(self, event) -> bool:
         key = key_int(event.key())
+        scan_code = _scan_code(event)
         if event.isAutoRepeat():
-            return self.handles(key)
+            return self.handles(key, scan_code)
         self._set_multiplier(modifier_multiplier(event, pressed=False))
         action = self._held.pop(key, None)
         if action is not None:
             self.move_released.emit(action)
             return True
-        return self.handles(key)
+        return self.handles(key, scan_code)
 
     def release_all(self):
         for action in self._held.values():

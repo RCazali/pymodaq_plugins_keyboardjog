@@ -22,12 +22,14 @@ class InputSource(QtCore.QObject):
     """Base class of the input sources: the signals the motion controller listens to
 
     * ``move_pressed`` / ``move_released``: a move action starts / stops being requested (key pressed / released)
+    * ``select_requested``: select the group of this number (1 = first group of the main view)
     * ``step_scale_requested``: +1 to multiply the step sizes by the step factor, -1 to divide them
     * ``multiplier_changed``: temporary multiplier of the step while it is held (continuous mode: Shift / Ctrl)
     * ``reset_requested``: forget every held action (focus lost...)
     """
     move_pressed = QtCore.Signal(object)
     move_released = QtCore.Signal(object)
+    select_requested = QtCore.Signal(int)
     step_scale_requested = QtCore.Signal(int)
     multiplier_changed = QtCore.Signal(float)
     reset_requested = QtCore.Signal()

@@ -43,7 +43,6 @@ class AxisState:
 
 class MotionController(QtCore.QObject):
     step_changed = QtCore.Signal(str, float)
-    active_group_changed = QtCore.Signal(int)
     message = QtCore.Signal(str)
 
     def __init__(self, clock: Callable[[], float] = time.monotonic, parent: QtCore.QObject = None):
@@ -55,7 +54,6 @@ class MotionController(QtCore.QObject):
         self.min_interval_s = 0.0
         self.move_timeout_s = 10.0
         self.multiplier = 1.0
-        self.active_group = -1
         self._states: Dict[str, AxisState] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(TICK_MS)
@@ -113,9 +111,6 @@ class MotionController(QtCore.QObject):
         state = self._states.get(action.actuator)
         if state is None:
             return
-        if action.group != self.active_group:
-            self.active_group = action.group
-            self.active_group_changed.emit(action.group)
         if action.direction in state.held:
             state.held.remove(action.direction)
         state.held.append(action.direction)

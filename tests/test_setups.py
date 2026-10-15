@@ -16,7 +16,7 @@ def sample_setup():
     return JogSetup(displayed=['Stage X', 'Rotation µ'], bindings=[Binding.pair('Stage X', 'Stage Y'),
                                                                    Binding.single('Focus Z', 'PgDown', 'PgUp')],
                     steps={'Stage X': 0.001, 'Stage Y': 2.5, 'Focus Z': 1e-5}, motion_mode='continuous',
-                    step_factor=5.0, step_scope='last', always_on_top=False, min_interval_ms=120,
+                    step_factor=5.0, always_on_top=False, min_interval_ms=120,
                     stop_on_focus_loss=False, move_timeout_s=3.0)
 
 

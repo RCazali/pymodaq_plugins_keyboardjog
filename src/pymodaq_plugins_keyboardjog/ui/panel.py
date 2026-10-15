@@ -2,8 +2,8 @@
 
 Focus indicator (main safety feature): the panel is *armed* only while it owns the keyboard focus in the active
 window. Armed = green border, the keys move the actuators. Not armed = red border, every key is ignored.
-Clicking on the panel gives it the focus. Clicking in the settings tree gives the focus to the tree, so the panel
-turns red: typing a value never moves an actuator.
+Clicking on the panel gives it the focus (and selects the group of the clicked row). Clicking in the settings tree
+gives the focus to the tree, so the panel turns red: typing a value never moves an actuator.
 """
 from __future__ import annotations
 
@@ -20,12 +20,15 @@ Qt = QtCore.Qt
 ARMED_COLOR = '#27ae60'
 DISARMED_COLOR = '#c0392b'
 WARNING_COLOR = '#d35400'
+SELECTED_MARK = '▶'
+HINT = '1-9 or click: select   ←→ ↓↑: move   + / -: step size'
 
 
 @dataclass
 class RowInfo:
     name: str
     units: str = ''
+    number: str = ''      # group number, on the first row of the group
     keys: str = ''
 
 
@@ -48,6 +51,8 @@ class _Row:
         self.info = info
         self.last_value: Optional[float] = None
         self.last_step: Optional[float] = None
+        self.number = QtWidgets.QLabel(info.number)
+        self.number.setMinimumWidth(22)
         self.name = QtWidgets.QLabel(info.name)
         self.value = QtWidgets.QLabel('---')
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -55,19 +60,28 @@ class _Row:
         self.step = QtWidgets.QLabel('')
         self.step.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.keys = QtWidgets.QLabel(info.keys)
-        for col, label in enumerate((self.name, self.value, self.step, self.keys)):
+        for col, label in enumerate(self.labels):
             label.setTextInteractionFlags(Qt.NoTextInteraction)
             grid.addWidget(label, row, col)
         self.step.setStyleSheet('color: gray;')
         self.keys.setStyleSheet('color: gray;')
+        self.number.setStyleSheet('color: gray;')
 
-    def set_bold(self, bold: bool):
-        font = self.name.font()
-        font.setBold(bold)
-        self.name.setFont(font)
+    @property
+    def labels(self):
+        return self.number, self.name, self.value, self.step, self.keys
+
+    def set_selected(self, selected: bool):
+        for label in (self.name, self.number):
+            font = label.font()
+            font.setBold(selected)
+            label.setFont(font)
+        self.number.setText(f'{SELECTED_MARK} {self.info.number}'.strip() if selected else self.info.number)
+        self.number.setStyleSheet(f'color: {ARMED_COLOR};' if selected else 'color: gray;')
+        self.keys.setStyleSheet('' if selected else 'color: gray;')
 
     def remove(self, grid: QtWidgets.QGridLayout):
-        for label in (self.name, self.value, self.step, self.keys):
+        for label in self.labels:
             grid.removeWidget(label)
             label.hide()             # never setParent(None): the label would become a top-level window
             label.deleteLater()
@@ -77,6 +91,7 @@ class JogPanel(QtWidgets.QFrame):
     armed_changed = QtCore.Signal(bool)
     settings_toggled = QtCore.Signal(bool)
     always_on_top_toggled = QtCore.Signal(bool)
+    row_clicked = QtCore.Signal(str)
 
     def __init__(self, keyboard: KeyboardInput, parent: QtWidgets.QWidget = None):
         super().__init__(parent)
@@ -119,9 +134,13 @@ class JogPanel(QtWidgets.QFrame):
         self.grid.setVerticalSpacing(1)
         layout.addWidget(self.rows_widget)
 
-        self.empty_label = QtWidgets.QLabel('No actuator: open the settings to choose and bind actuators.')
+        self.empty_label = QtWidgets.QLabel('No actuator in the Dashboard (or none displayed: see the settings).')
         self.empty_label.setStyleSheet('color: gray;')
         layout.addWidget(self.empty_label)
+
+        self.hint_label = QtWidgets.QLabel(HINT)
+        self.hint_label.setStyleSheet('color: gray; font-size: 8pt;')
+        layout.addWidget(self.hint_label)
 
         self.message_label = QtWidgets.QLabel('')
         self.message_label.setWordWrap(True)
@@ -163,9 +182,27 @@ class JogPanel(QtWidgets.QFrame):
         for i, info in enumerate(rows):
             self._rows[info.name] = _Row(self.grid, i, info)
         self.empty_label.setVisible(not self._rows)
+        self.hint_label.setVisible(bool(self._rows))
 
     def row_names(self) -> List[str]:
         return list(self._rows)
+
+    def set_selected(self, names: Iterable[str]):
+        names = set(names)
+        for name, row in self._rows.items():
+            row.set_selected(name in names)
+
+    def selected_names(self) -> List[str]:
+        return [name for name, row in self._rows.items() if row.name.font().bold()]
+
+    def set_keys(self, name: str, text: str):
+        row = self._rows.get(name)
+        if row is not None:
+            row.keys.setText(text)
+
+    def keys_text(self, name: str) -> str:
+        row = self._rows.get(name)
+        return row.keys.text() if row is not None else ''
 
     def set_value(self, name: str, value: Optional[float]):
         row = self._rows.get(name)
@@ -188,11 +225,6 @@ class JogPanel(QtWidgets.QFrame):
         row = self._rows.get(name)
         return row.step.text() if row is not None else ''
 
-    def set_highlight(self, names: Iterable[str]):
-        names = set(names)
-        for name, row in self._rows.items():
-            row.set_bold(name in names)
-
     def set_mode_text(self, text: str):
         self.mode_label.setText(text)
 
@@ -200,6 +232,13 @@ class JogPanel(QtWidgets.QFrame):
         self.message_label.setText(text)
         self.message_label.setStyleSheet(f'color: {WARNING_COLOR};' if warning else 'color: gray;')
         self.message_label.setVisible(bool(text))
+
+    def row_at(self, pos: QtCore.QPoint) -> Optional[str]:
+        child = self.childAt(pos)
+        for name, row in self._rows.items():
+            if child in row.labels:
+                return name
+        return None
 
     # ------------------------------------------------------------------ focus / armed state
     @property
@@ -213,7 +252,7 @@ class JogPanel(QtWidgets.QFrame):
         self._armed = armed
         color = ARMED_COLOR if armed else DISARMED_COLOR
         self.setStyleSheet(f'#jog_panel {{ border: 3px solid {color}; border-radius: 4px; }}')
-        self.state_label.setText('● ACTIVE' if armed else '● click to activate')
+        self.state_label.setText('● ACTIVE' if armed else '● click here to activate')
         self.state_label.setStyleSheet(f'color: {color}; font-weight: bold;')
         if not armed:
             self.keyboard.reset()
@@ -238,6 +277,10 @@ class JogPanel(QtWidgets.QFrame):
 
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         self.setFocus(Qt.MouseFocusReason)
+        pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+        name = self.row_at(pos)
+        if name is not None:
+            self.row_clicked.emit(name)
         super().mousePressEvent(event)
 
     # ------------------------------------------------------------------ keys

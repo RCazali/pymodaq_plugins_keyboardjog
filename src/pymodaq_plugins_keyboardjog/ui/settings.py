@@ -10,11 +10,14 @@ from typing import Callable, Dict, List, Sequence
 
 from pymodaq_gui.parameter import Parameter
 
-from ..core.keys import ARROW_KEYS, normalize_key_name
-from ..core.model import AxisBinding, Binding, JogSetup, MOTION_MODES, PAIR, SINGLE, STEP_SCOPES
+from ..core.keys import normalize_key_name
+from ..core.model import Binding, JogSetup, MOTION_MODES, PAIR, SINGLE
 
-KEY_TIP = ("Key name, e.g. Left, Right, Up, Down, PgUp, PgDown, Home, End, Ins, Del, A, Z, F2... "
-           "(no modifiers; '+', '-', '=', Shift, Ctrl and Tab are reserved)")
+KEY_TIP = ("Key name, e.g. PgUp, PgDown, Home, End, Ins, Del, A, Z, F2... (no modifiers; the arrows, the digits, "
+           "'+', '-', '=', Shift, Ctrl and Tab are reserved)")
+
+GENERAL_NAMES = ('motion_mode', 'step_factor', 'always_on_top', 'min_interval_ms', 'stop_on_focus_loss',
+                 'move_timeout_s')
 
 
 def settings_params() -> list:
@@ -36,9 +39,6 @@ def settings_params() -> list:
                     '(Shift = step x10, Ctrl = step /10 while held)'},
             {'title': 'Step factor:', 'name': 'step_factor', 'type': 'float', 'value': 10.0, 'min': 1.01,
              'tip': "The '+' key multiplies the step by this factor, the '-' key divides it"},
-            {'title': '+/- keys act on:', 'name': 'step_scope', 'type': 'list', 'limits': list(STEP_SCOPES),
-             'value': 'all', 'tip': 'all: every actuator of the main view. last: the actuators of the last '
-                                    'binding used (shown in bold)'},
             {'title': 'Min. interval (ms):', 'name': 'min_interval_ms', 'type': 'int', 'value': 0, 'min': 0,
              'tip': 'Continuous mode: minimum time between the end of a step and the next one'},
             {'title': 'Stop on focus loss:', 'name': 'stop_on_focus_loss', 'type': 'bool', 'value': True,
@@ -48,11 +48,13 @@ def settings_params() -> list:
             {'title': 'Always on top:', 'name': 'always_on_top', 'type': 'bool', 'value': True},
         ]},
         {'title': 'Actuators (display / step)', 'name': 'actuators', 'type': 'group', 'children': []},
-        {'title': 'Key bindings', 'name': 'bindings', 'type': 'group', 'children': [
-            {'title': 'Add pair (arrow keys)', 'name': 'add_pair', 'type': 'action',
-             'tip': 'Left/Right move the first actuator, Down/Up the second one'},
-            {'title': 'Add single actuator', 'name': 'add_single', 'type': 'action',
-             'tip': 'One actuator moved by two keys of your choice'},
+        {'title': 'Pairs and extra keys', 'name': 'bindings', 'type': 'group', 'children': [
+            {'title': 'Add pair', 'name': 'add_pair', 'type': 'action',
+             'tip': 'Two actuators selected together (one number): Left/Right move the first one, Down/Up the '
+                    'second one (e.g. the X and Y of a stage)'},
+            {'title': 'Add extra keys', 'name': 'add_single', 'type': 'action',
+             'tip': 'Two keys of your choice that always move an actuator, whatever the selection '
+                    '(e.g. PgDown / PgUp for a focus)'},
             {'title': 'Problems:', 'name': 'problems', 'type': 'text', 'value': '', 'readonly': True,
              'visible': False},
         ]},
@@ -95,18 +97,20 @@ def add_binding(settings: Parameter, binding: Binding, names: Sequence[str],
                 on_remove: Callable[[Parameter], None] = None) -> Parameter:
     limits = [''] + list(names)
     children = [{'title': 'Kind', 'name': 'kind', 'type': 'str', 'value': binding.kind, 'visible': False}]
-    labels = ('X (Left/Right)', 'Y (Down/Up)') if binding.kind == PAIR else ('Actuator',)
+    labels = ('First (Left/Right)', 'Second (Down/Up)') if binding.kind == PAIR else ('Actuator',)
     for j, axis in enumerate(binding.axes):
         actuator = axis.actuator if axis.actuator in names else ''
-        children += [
-            {'title': f'{labels[j]}:', 'name': f'act{j}', 'type': 'list', 'limits': limits, 'value': actuator},
-            {'title': '  key -:', 'name': f'minus{j}', 'type': 'str', 'value': axis.key_minus, 'tip': KEY_TIP},
-            {'title': '  key +:', 'name': f'plus{j}', 'type': 'str', 'value': axis.key_plus, 'tip': KEY_TIP},
-        ]
+        children.append({'title': f'{labels[j]}:', 'name': f'act{j}', 'type': 'list', 'limits': limits,
+                         'value': actuator})
+        if binding.kind == SINGLE:
+            children += [
+                {'title': '  key -:', 'name': f'minus{j}', 'type': 'str', 'value': axis.key_minus, 'tip': KEY_TIP},
+                {'title': '  key +:', 'name': f'plus{j}', 'type': 'str', 'value': axis.key_plus, 'tip': KEY_TIP},
+            ]
     children.append({'title': 'Remove', 'name': 'remove', 'type': 'action'})
     count = sum(1 for g in binding_groups(settings) if g.child('kind').value() == binding.kind) + 1
     group = settings.child('bindings').addChild({
-        'title': f"{'Pair' if binding.kind == PAIR else 'Single'} {count}", 'name': _next_binding_name(settings),
+        'title': f"{'Pair' if binding.kind == PAIR else 'Extra keys'} {count}", 'name': _next_binding_name(settings),
         'type': 'group', 'children': children})
     if on_remove is not None:
         group.child('remove').sigActivated.connect(lambda *_: on_remove(group))
@@ -121,12 +125,6 @@ def set_bindings(settings: Parameter, bindings: Sequence[Binding], names: Sequen
         add_binding(settings, binding, names, on_remove)
 
 
-def new_pair(setup: JogSetup) -> Binding:
-    """A pair on the arrow keys if they are free, else without keys"""
-    used = {k for b in setup.bindings for a in b.axes for k in (a.key_minus, a.key_plus)}
-    return Binding.pair(keys=ARROW_KEYS if not used & set(ARROW_KEYS) else ('', '', '', ''))
-
-
 def set_problems(settings: Parameter, problems: Sequence[str]):
     param = settings.child('bindings', 'problems')
     param.setValue('\n'.join(problems))
@@ -136,28 +134,25 @@ def set_problems(settings: Parameter, problems: Sequence[str]):
 # ---------------------------------------------------------------------------------------------- setup <-> tree
 def read_setup(settings: Parameter) -> JogSetup:
     general = settings.child('general')
-    setup = JogSetup(**{name: general.child(name).value() for name in (
-        'motion_mode', 'step_factor', 'step_scope', 'always_on_top', 'min_interval_ms', 'stop_on_focus_loss',
-        'move_timeout_s')})
+    setup = JogSetup(**{name: general.child(name).value() for name in GENERAL_NAMES})
     for group in settings.child('actuators').children():
         if group.child('display').value():
             setup.displayed.append(group.title())
         setup.steps[group.title()] = float(group.child('step').value())
     for group in binding_groups(settings):
-        kind = group.child('kind').value()
-        n_axes = 2 if kind == PAIR else 1
-        axes = [AxisBinding(group.child(f'act{j}').value() or '',
-                            normalize_key_name(group.child(f'minus{j}').value()),
-                            normalize_key_name(group.child(f'plus{j}').value())) for j in range(n_axes)]
-        setup.bindings.append(Binding(kind if kind in (PAIR, SINGLE) else SINGLE, axes))
+        if group.child('kind').value() == PAIR:
+            setup.bindings.append(Binding.pair(group.child('act0').value() or '', group.child('act1').value() or ''))
+        else:
+            setup.bindings.append(Binding.single(group.child('act0').value() or '',
+                                                 normalize_key_name(group.child('minus0').value()),
+                                                 normalize_key_name(group.child('plus0').value())))
     return setup
 
 
 def write_setup(settings: Parameter, setup: JogSetup, names: Sequence[str], units: Dict[str, str],
                 on_remove: Callable[[Parameter], None] = None):
     general = settings.child('general')
-    for name in ('motion_mode', 'step_factor', 'step_scope', 'always_on_top', 'min_interval_ms',
-                 'stop_on_focus_loss', 'move_timeout_s'):
+    for name in GENERAL_NAMES:
         general.child(name).setValue(getattr(setup, name))
     fill_actuators(settings, names, units, setup)
     set_bindings(settings, setup.bindings, names, on_remove)

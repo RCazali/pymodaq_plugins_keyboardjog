@@ -32,14 +32,16 @@ Extensions
   * **Focus indicator** (main safety feature): the window border is **green** when it has the keyboard focus (the
     keys move the actuators) and **red** otherwise (every key is ignored). Click the window to activate it.
     Clicking in the settings tree also makes it red: typing a value never moves an actuator.
-  * **Main view**: one compact row per displayed actuator: name, live position with units, step size, keys.
-    Every actuator bound to a key is always displayed.
-  * **Pairs** on the arrow keys: Left / Right move the first actuator (- / +), Down / Up the second one.
-    **Single actuators** on two keys of your choice (one for -, one for +). A key used twice is reported in the
-    settings and disabled.
-  * **Step size** per actuator, in its units. ``+`` multiplies the step by the step factor (10 by default), ``-``
-    divides it. By default they act on every displayed actuator; the setting "+/- keys act on: last" restricts them
-    to the actuators of the last binding used (shown in bold).
+  * **Works without configuration**: every actuator of the Dashboard is shown with a number, the first one is
+    selected. Keys **1-9** (or a click on a row) select an actuator, the **arrow keys** move the selection.
+  * **Main view**: one compact row per displayed actuator: number, name, live position with units, step size, keys.
+    The selection is marked with ▶ and its keys are shown.
+  * **Pairs** (settings): two actuators under one number, e.g. the X and Y of a stage: Left / Right move the first
+    one, Down / Up the second one. A single actuator is moved by both Left / Right and Down / Up.
+  * **Extra keys** (settings): two keys of your choice (e.g. PgDown / PgUp for a focus) that always move an
+    actuator, whatever the selection. A key used twice is reported in the settings and disabled.
+  * **Step size** per actuator, in its units. ``+`` multiplies the step of the selection by the step factor (10 by
+    default), ``-`` divides it.
   * **Step mode** (default): one key press = one relative move of one step. Holding the key does nothing more.
   * **Continuous mode**: steps are repeated while the key is held, each one sent only once the previous move is
     done (moves are never queued), with an optional minimum interval. While held, **Shift** = step x10,
@@ -61,13 +63,15 @@ Usage
 =====
 
 1. Load a Dashboard preset (PyMoDAQ 5.1) or experiment (5.2+) with actuators, initialize them.
-2. Open *Extensions > Keyboard Jog*.
-3. Click *Settings*, then *Key bindings > Add pair (arrow keys)* and choose the X and Y actuators; or *Add single
-   actuator* and type its two keys (``PgUp``, ``PgDown``, ``Home``, ``End``, ``A``, ``F2``...).
-4. Set the steps (*Actuators* group, or ``+`` / ``-`` in the main view), save the setup (*New name*, *Save as*).
-5. Hide the settings, click the window (green border) and move with the keys.
+2. Open *Extensions > Keyboard Jog*. Click the window (green border).
+3. Press ``1``, ``2``... (or click a row) to select an actuator, move it with the arrow keys, adjust its step with
+   ``+`` / ``-``.
+4. Optional, in *Settings*: *Pairs and extra keys > Add pair* (X / Y of a stage under one number), *Add extra keys*
+   (e.g. ``PgDown`` / ``PgUp``), steps and displayed actuators (*Actuators*), then save the setup (*New name*,
+   *Save as*).
 
-Keys reserved by the extension: ``+`` (and ``=``), ``-``, Shift, Ctrl, Alt and Tab.
+Keys used by the extension: arrows, ``1``-``9`` (top row or keypad; the top row also works without Shift on an
+AZERTY keyboard, on Windows and Linux), ``+`` (and ``=``), ``-``, Shift, Ctrl, Alt and Tab.
 
 Development launch with the mock actuators of ``pymodaq_plugins_mock``::
 
@@ -92,8 +96,7 @@ or, for development, ``pip install -e .`` in a clone of this repository, then ``
 To be discussed (not implemented)
 =================================
 
-Keyboard layout independence (physical keys / AZERTY-QWERTZ presets), active group selection with the number keys,
-axis inversion / swap per pair, emergency stop key, software limits and maximum step, lock during scans, display
+Keyboard layout independence for the extra keys (physical keys / AZERTY-QWERTZ presets), axis inversion / swap per pair, emergency stop key, software limits and maximum step, lock during scans, display
 interactions (absolute position entry, mouse wheel, color while moving), position memory, gamepad support (the input
 handling is already "input source -> action"), true continuous motion (needs DAQ_Move evolutions), smart default
-setup on first launch.
+pairs on first launch.

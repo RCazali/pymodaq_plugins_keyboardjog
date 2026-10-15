@@ -13,7 +13,7 @@ from typing import List, Optional
 from pymodaq_gui.parameter import Parameter, ioxml
 from pymodaq_utils.logger import set_logger, get_module_name
 
-from .model import (AxisBinding, Binding, JogSetup, MOTION_MODES, PAIR, SINGLE, STEP_MODE, STEP_SCOPES, SCOPE_ALL)
+from .model import AxisBinding, Binding, JogSetup, MOTION_MODES, PAIR, SINGLE, STEP_MODE
 
 logger = set_logger(get_module_name(__file__))
 
@@ -21,7 +21,7 @@ SETUP_VERSION = 1
 LAST_SETUP_FILE = 'last_setup.txt'
 EXTENSION_FOLDER = 'KeyboardJog'  # same name as CustomApp.get_local_folder() of PyMoDAQ >= 5.3
 
-_GENERAL = (('motion_mode', 'str'), ('step_factor', 'float'), ('step_scope', 'str'), ('always_on_top', 'bool'),
+_GENERAL = (('motion_mode', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'),
             ('min_interval_ms', 'int'), ('stop_on_focus_loss', 'bool'), ('move_timeout_s', 'float'))
 
 
@@ -99,8 +99,6 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
     values = {name: _value(general, name, getattr(defaults, name)) for name, _ in _GENERAL}
     if values['motion_mode'] not in MOTION_MODES:
         values['motion_mode'] = STEP_MODE
-    if values['step_scope'] not in STEP_SCOPES:
-        values['step_scope'] = SCOPE_ALL
     if values['step_factor'] <= 1:
         values['step_factor'] = defaults.step_factor
     displayed = [str(c.value()) for c in _children(param, 'displayed') if c.value()]
