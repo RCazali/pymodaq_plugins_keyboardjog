@@ -179,6 +179,11 @@ class KeyboardJog(CustomExt):
         self.keyboard.step_scale_requested.connect(self.scale_steps)
         self.keyboard.select_requested.connect(self.select_number)
         self.keyboard.multiplier_changed.connect(self._on_multiplier)
+        # pressed keys display: connected after the slots doing the job, so that it describes the result
+        self.keyboard.move_pressed.connect(self._show_move_key)
+        self.keyboard.step_scale_requested.connect(self._show_step_key)
+        self.keyboard.select_requested.connect(self._show_select_key)
+        self.keyboard.multiplier_changed.connect(self._show_modifier_key)
         self.panel.group_clicked.connect(self.select_group)
         self.panel.context_requested.connect(self._show_group_menu)
         self.controller.step_changed.connect(self._on_step_changed)
@@ -329,6 +334,10 @@ class KeyboardJog(CustomExt):
         self.panel.on_top_check.blockSignals(False)
         self.apply_always_on_top(setup.always_on_top)
         self.panel.show_history(setup.show_history)
+        if self.panel.toast_space.isVisibleTo(self.panel) != setup.show_keys:
+            self.panel.set_key_toast_enabled(setup.show_keys)
+            for delay_ms in (0, 50):
+                QtCore.QTimer.singleShot(delay_ms, self._fit_window)
         if problems:
             self.show_message('Problems in the pairs / extra keys: see the settings', warning=True)
 
@@ -579,6 +588,43 @@ class KeyboardJog(CustomExt):
         """Shift / Ctrl held: shown, used by the actuators in continuous mode"""
         text = 'x10' if value > 1 else '/10' if value < 1 else ''
         self.panel.set_mode_text(f'step {text}' if text else '')
+
+    # ---------------------------------------------------------------- pressed keys display
+    def _unit(self, name: str) -> str:
+        return self.ports[name].units() if name in self.ports else ''
+
+    def _show_move_key(self, action):
+        if not self.setup.show_keys:
+            return
+        name = action.actuator
+        continuous = self.controller.is_continuous(name)
+        multiplier = self.controller.multiplier if continuous else 1.0
+        keys = ([] if multiplier == 1 else ['Shift' if multiplier > 1 else 'Ctrl']) + [self.keyboard.last_key]
+        step = self.controller.step(name) * multiplier
+        sign = '+' if action.direction > 0 else '−'
+        text = f'{name} {sign}{step:.4g} {self._unit(name)}'.rstrip()
+        self.panel.key_toast.show_keys(keys, text + (' … while held' if continuous else ''))
+
+    def _show_step_key(self, sign: int):
+        if not self.setup.show_keys:
+            return
+        names = [n for n in self.selected_group() if n in self.ports]
+        steps = ', '.join(f'{self.controller.step(n):.4g} {self._unit(n)}'.rstrip() for n in names)
+        factor = f"{'×' if sign > 0 else '÷'}{self.setup.step_factor:g}"
+        self.panel.key_toast.show_keys([self.keyboard.last_key], f'step {factor} → {steps}')
+
+    def _show_select_key(self, number: int):
+        if not self.setup.show_keys:
+            return
+        group = next((g for g in self.groups if g.number == number), None)
+        self.panel.key_toast.show_keys([self.keyboard.last_key],
+                                       f'select {group.title}' if group is not None else 'no such group')
+
+    def _show_modifier_key(self, value: float):
+        if not self.setup.show_keys or value == 1:
+            return
+        key, effect = ('Shift', 'step ×10') if value > 1 else ('Ctrl', 'step ÷10')
+        self.panel.key_toast.show_keys([key], f'{effect} while held (continuous mode)')
 
     def show_message(self, text: str, warning: bool = False, duration_ms: int = 4000):
         self.panel.show_message(text, warning)

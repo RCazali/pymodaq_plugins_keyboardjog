@@ -25,8 +25,8 @@ AXIS_TIP = ('horizontal: moved by the left / right keys (A / D or Q / D, arrows)
 CONTINUOUS_TIP = ('off: one key press = one step. on: steps repeated while the key is held, each one once the '
                   'previous move is done (Shift = step x10, Ctrl = step /10 while held)')
 
-GENERAL_NAMES = ('all_continuous', 'move_keys', 'step_factor', 'always_on_top', 'show_history', 'min_interval_ms',
-                 'stop_on_focus_loss', 'move_timeout_s')
+GENERAL_NAMES = ('all_continuous', 'move_keys', 'step_factor', 'always_on_top', 'show_history', 'show_keys',
+                 'min_interval_ms', 'stop_on_focus_loss', 'move_timeout_s')
 
 
 def settings_params() -> list:
@@ -63,6 +63,8 @@ def settings_params() -> list:
             {'title': 'Always on top:', 'name': 'always_on_top', 'type': 'bool', 'value': True},
             {'title': 'Show history:', 'name': 'show_history', 'type': 'bool', 'value': False,
              'tip': 'History of the moves of the selected group (also the graph button of the window)'},
+            {'title': 'Show pressed keys:', 'name': 'show_keys', 'type': 'bool', 'value': False,
+             'tip': 'Each key press and its effect shown for a moment at the bottom of the window (demos, teaching)'},
         ]},
         {'title': 'Extra keys', 'name': 'extra', 'type': 'group', 'expanded': False, 'children': [
             {'title': 'Add extra keys', 'name': 'add', 'type': 'action',

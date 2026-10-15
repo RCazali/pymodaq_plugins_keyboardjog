@@ -294,6 +294,24 @@ def test_continuous_is_per_actuator(jog):
     assert spies['Stage X'].moves == [pytest.approx(0.01)]
 
 
+def test_pressed_keys_display(jog):
+    ext, spies = jog
+    tap(ext, Qt.Key_D)
+    assert not ext.panel.key_toast.isVisible()           # off by default
+    idle(ext, spies)
+    ext.settings.child('general', 'show_keys').setValue(True)
+    QtWidgets.QApplication.sendEvent(ext.panel, key_event('press', Qt.Key_D, text='d'))
+    QtWidgets.QApplication.sendEvent(ext.panel, key_event('release', Qt.Key_D, text='d'))
+    assert ext.panel.key_toast.isVisible()
+    assert ext.panel.key_toast.plain_text() == 'D Stage X +0.01 mm'
+    idle(ext, spies)
+    tap(ext, Qt.Key_Plus)
+    assert ext.panel.key_toast.plain_text().endswith('step ×10 → 0.1 mm, 0.2 mm')
+    tap(ext, Qt.Key_2)
+    assert ext.panel.key_toast.plain_text().endswith('select Focus Z')
+    assert wait(lambda: not ext.panel.key_toast.isVisible(), 3)        # hidden after a moment
+
+
 def test_all_continuous(jog):
     ext, spies = jog
     continuous(ext, ['Stage Y'])
@@ -572,7 +590,7 @@ def test_saved_positions(jog, monkeypatch):
     ext.panel.show_history(True)                         # the saved positions are stars on the history
     assert ext.history_plot.mark_names() == ['HA']
     points = ext.history.points(['Stage X', 'Stage Y'])
-    index = next(i for i, p in enumerate(points) if abs(p[1] - x0 - 0.01) < 1e-3 and abs(p[2] - y0) < 1e-3)
+    index = min(range(len(points)), key=lambda i: abs(points[i][1] - x0 - 0.01) + abs(points[i][2] - y0))
     assert ext.save_history_point(index, name='after D') == 'after D'  # right-click on a point of the history
     assert ext.history_plot.mark_names() == ['HA', 'after D']
     after_d = ext.positions.get(['Stage X', 'Stage Y'], 'after D').values

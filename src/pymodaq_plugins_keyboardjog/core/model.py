@@ -75,6 +75,7 @@ class JogSetup:
     step_factor: float = 10.0
     always_on_top: bool = True
     show_history: bool = False
+    show_keys: bool = False                                      # pressed keys display (demos, teaching)
     min_interval_ms: int = 0
     stop_on_focus_loss: bool = True
     move_timeout_s: float = 10.0

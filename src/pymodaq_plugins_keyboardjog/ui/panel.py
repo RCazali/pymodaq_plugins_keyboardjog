@@ -214,6 +214,56 @@ class _Line:
             label.deleteLater()
 
 
+class KeyToast(QtWidgets.QLabel):
+    """Pressed keys display (demos, teaching): the keys and their effect in a bubble at the bottom of the panel,
+    hidden after a moment; the same message repeated shows a counter (×3)"""
+    DURATION_MS = 1800
+
+    def __init__(self, parent: QtWidgets.QWidget):
+        super().__init__(parent)
+        self.setTextFormat(Qt.RichText)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setStyleSheet('background-color: rgba(30, 30, 46, 225); color: white; border-radius: 6px; '
+                           'padding: 3px 10px;')
+        font = self.font()
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() + 1)
+        self.setFont(font)
+        self.hide()
+        self._message = ''
+        self._count = 0
+        self._timer = QtCore.QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+
+    def show_keys(self, keys: Sequence[str], text: str):
+        message = '+'.join(keys) + '|' + text
+        self._count = self._count + 1 if message == self._message and self.isVisible() else 1
+        self._message = message
+        caps = '&nbsp;+&nbsp;'.join(f"<span style='background-color:#585b70; color:white;'>&nbsp;{html.escape(k)}"
+                                    f"&nbsp;</span>" for k in keys)
+        count = f"&nbsp;&nbsp;<span style='color:#a6adc8;'>×{self._count}</span>" if self._count > 1 else ''
+        self.setText(f"{caps}&nbsp;&nbsp;{html.escape(text)}{count}")
+        self.adjustSize()
+        self.place()
+        self.show()
+        self.raise_()
+        self._timer.start(self.DURATION_MS)
+
+    def plain_text(self) -> str:
+        return self._message.replace('|', ' ') if self.isVisible() else ''
+
+    def place(self):
+        """In the line kept free for it at the bottom of the lines (it never covers the values)"""
+        parent = self.parentWidget()
+        anchor = getattr(parent, 'toast_space', None)
+        if anchor is not None and anchor.isVisible():
+            top_left = anchor.mapTo(parent, QtCore.QPoint(0, 0))
+            self.move(top_left.x(), top_left.y() + max(0, (anchor.height() - self.height()) // 2))
+        elif parent is not None:
+            self.move(max(4, (parent.width() - self.width()) // 2), max(4, parent.height() - self.height() - 8))
+
+
 class JogPanel(QtWidgets.QFrame):
     armed_changed = QtCore.Signal(bool)
     settings_toggled = QtCore.Signal(bool)
@@ -304,6 +354,10 @@ class JogPanel(QtWidgets.QFrame):
         self.message_label.setWordWrap(True)
         self.message_label.setVisible(False)
         left.addWidget(self.message_label)
+        self.toast_space = QtWidgets.QWidget()          # line of the pressed keys display, when enabled
+        self.toast_space.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 14)
+        self.toast_space.setVisible(False)
+        left.addWidget(self.toast_space)
         left.addStretch()
         body.addLayout(left)
 
@@ -330,11 +384,23 @@ class JogPanel(QtWidgets.QFrame):
             self.help_button.mapToGlobal(QtCore.QPoint(0, self.help_button.height())), self.help_button.toolTip(),
             self.help_button))
 
+        self.key_toast = KeyToast(self)
+
         self._watchdog = QtCore.QTimer(self)
         self._watchdog.setInterval(250)
         self._watchdog.timeout.connect(self.update_armed)
         self._watchdog.start()
         self.update_armed()
+
+    def set_key_toast_enabled(self, enabled: bool):
+        """Pressed keys display: a line is kept free for it at the bottom of the lines"""
+        self.toast_space.setVisible(enabled)
+        if not enabled:
+            self.key_toast.hide()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent):
+        super().resizeEvent(event)
+        self.key_toast.place()
 
     @staticmethod
     def _tool_button(icon: Optional[QtGui.QIcon], text: str, tip: str) -> QtWidgets.QToolButton:

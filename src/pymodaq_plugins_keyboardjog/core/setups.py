@@ -24,7 +24,7 @@ SETUP_VERSION = 3
 LAST_SETUP_FILE = 'last_setup.txt'
 EXTENSION_FOLDER = 'KeyboardJog'  # same name as CustomApp.get_local_folder() of PyMoDAQ >= 5.3
 
-_GENERAL = (('all_continuous', 'bool'), ('move_keys', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'), ('show_history', 'bool'),
+_GENERAL = (('all_continuous', 'bool'), ('move_keys', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'), ('show_history', 'bool'), ('show_keys', 'bool'),
             ('min_interval_ms', 'int'), ('stop_on_focus_loss', 'bool'), ('move_timeout_s', 'float'))
 
 

@@ -41,11 +41,11 @@ def wait(pred=lambda: False, timeout=10.0, step=0.005):
     return pred()
 
 
-def key_event(kind, key, modifiers=None, auto_repeat=False):
+def key_event(kind, key, modifiers=None, auto_repeat=False, text=''):
     if modifiers is None:
         modifiers = QtCore.Qt.NoModifier
     event_type = QtCore.QEvent.KeyPress if kind == 'press' else QtCore.QEvent.KeyRelease
-    return QtGui.QKeyEvent(event_type, key, modifiers, '', auto_repeat)
+    return QtGui.QKeyEvent(event_type, key, modifiers, text, auto_repeat)
 
 
 class FakeClock:

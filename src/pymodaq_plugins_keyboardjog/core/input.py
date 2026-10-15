@@ -16,9 +16,22 @@ from qtpy import QtCore
 
 from .actions import InputSource, MoveAction
 from .keys import (CONTROL_KEY, MODIFIER_KEYS, SHIFT_KEY, STEP_DOWN_KEYS, STEP_UP_KEYS, WASD, digit_of,
-                   direction_of, key_int)
+                   direction_of, key_int, key_name)
 
 Qt = QtCore.Qt
+
+
+def key_text(event) -> str:
+    """Readable label of the key of an event, as printed on the keyboard ('Z' on AZERTY for the W position)"""
+    key = key_int(event.key())
+    labels = {key_int(Qt.Key_Shift): 'Shift', key_int(Qt.Key_Control): 'Ctrl', key_int(Qt.Key_Left): '←',
+              key_int(Qt.Key_Right): '→', key_int(Qt.Key_Up): '↑', key_int(Qt.Key_Down): '↓'}
+    if key in labels:
+        return labels[key]
+    text = (event.text() or '').strip()
+    if text and text.isprintable():
+        return text.upper()
+    return key_name(key) or '?'
 
 
 def _scan_code(event) -> int:
@@ -57,6 +70,7 @@ class KeyboardInput(InputSource):
         self._held: Dict[int, MoveAction] = {}
         self._held_movement = set()            # held keys that are movement keys of the selected group
         self._multiplier = 1.0
+        self.last_key = ''                     # label of the last pressed key (pressed keys display)
 
     @property
     def held(self) -> Dict[int, MoveAction]:
@@ -100,6 +114,7 @@ class KeyboardInput(InputSource):
         scan_code = _scan_code(event)
         if event.isAutoRepeat():
             return self.handles(key, scan_code)
+        self.last_key = key_text(event)
         self._set_multiplier(modifier_multiplier(event, pressed=True))
         if key in STEP_UP_KEYS:
             self.step_scale_requested.emit(+1)
