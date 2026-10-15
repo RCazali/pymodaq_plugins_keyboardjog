@@ -33,11 +33,15 @@ Extensions
     keys move the actuators) and **red** otherwise (every key is ignored). Click the window to activate it.
     Clicking in the settings tree also makes it red: typing a value never moves an actuator.
   * **Works without configuration**: every actuator of the Dashboard is shown with a number, the first one is
-    selected. Keys **1-9** (or a click on a row) select an actuator, the **arrow keys** move the selection.
+    selected. Keys **1-9** (or a click on a row) select an actuator, **W A S D** move the selection.
+  * **Movement keys**: W A S D are recognized by their position on the keyboard (Windows, Linux), so they are the
+    Z Q S D keys of an AZERTY keyboard (the labels follow the input language). The arrows can be used instead, or
+    both (setting *Move keys*).
   * **Main view**: one compact row per displayed actuator: number, name, live position with units, step size, keys.
     The selection is marked with ▶ and its keys are shown.
-  * **Pairs** (settings): two actuators under one number, e.g. the X and Y of a stage: Left / Right move the first
-    one, Down / Up the second one. A single actuator is moved by both Left / Right and Down / Up.
+  * **Named pairs**: right-click a row, *Pair 'X' with ▸ Y*, give it a name (e.g. "XY stage"): the two actuators
+    get one number and are moved together, A / D the first one, S / W the second one. Right-click again to rename
+    or unpair. A single actuator is moved by both A / D and S / W.
   * **Extra keys** (settings): two keys of your choice (e.g. PgDown / PgUp for a focus) that always move an
     actuator, whatever the selection. A key used twice is reported in the settings and disabled.
   * **Step size** per actuator, in its units. ``+`` multiplies the step of the selection by the step factor (10 by
@@ -64,14 +68,15 @@ Usage
 
 1. Load a Dashboard preset (PyMoDAQ 5.1) or experiment (5.2+) with actuators, initialize them.
 2. Open *Extensions > Keyboard Jog*. Click the window (green border).
-3. Press ``1``, ``2``... (or click a row) to select an actuator, move it with the arrow keys, adjust its step with
+3. Press ``1``, ``2``... (or click a row) to select an actuator, move it with W A S D, adjust its step with
    ``+`` / ``-``.
-4. Optional, in *Settings*: *Pairs and extra keys > Add pair* (X / Y of a stage under one number), *Add extra keys*
-   (e.g. ``PgDown`` / ``PgUp``), steps and displayed actuators (*Actuators*), then save the setup (*New name*,
-   *Save as*).
+4. Right-click a row to pair two actuators (X / Y of a stage) under one name and number.
+5. Optional, in *Settings*: *Add extra keys* (e.g. ``PgDown`` / ``PgUp``), steps and displayed actuators
+   (*Actuators*), movement keys, then save the setup (*New name*, *Save as*).
 
-Keys used by the extension: arrows, ``1``-``9`` (top row or keypad; the top row also works without Shift on an
-AZERTY keyboard, on Windows and Linux), ``+`` (and ``=``), ``-``, Shift, Ctrl, Alt and Tab.
+Keys used by the extension: W A S D (by position) and / or the arrows, ``1``-``9`` (top row or keypad; the top row
+also works without Shift on an AZERTY keyboard, on Windows and Linux), ``+`` (and ``=``), ``-``, Shift, Ctrl, Alt and
+Tab.
 
 Development launch with the mock actuators of ``pymodaq_plugins_mock``::
 

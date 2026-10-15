@@ -21,15 +21,25 @@ ARMED_COLOR = '#27ae60'
 DISARMED_COLOR = '#c0392b'
 WARNING_COLOR = '#d35400'
 SELECTED_MARK = '▶'
-HINT = '1-9 or click: select   ←→ ↓↑: move   + / -: step size'
+
+
+def hint_text(move_keys_label: str) -> str:
+    return f'1-9 or click: select   {move_keys_label}: move   + / -: step   right-click: pair'
 
 
 @dataclass
 class RowInfo:
-    name: str
+    """A row of the main view: an actuator, or the header (name) of a pair"""
+    label: str
+    group: int
     units: str = ''
-    number: str = ''      # group number, on the first row of the group
-    keys: str = ''
+    number: str = ''                 # group number, on the first row of the group
+    actuator: Optional[str] = None   # None: header row of a pair
+    indent: bool = False             # actuator of a pair
+
+    @property
+    def is_header(self) -> bool:
+        return self.actuator is None
 
 
 def format_value(value: Optional[float], units: str = '', step: Optional[float] = None) -> str:
@@ -53,13 +63,15 @@ class _Row:
         self.last_step: Optional[float] = None
         self.number = QtWidgets.QLabel(info.number)
         self.number.setMinimumWidth(22)
-        self.name = QtWidgets.QLabel(info.name)
-        self.value = QtWidgets.QLabel('---')
+        self.name = QtWidgets.QLabel(info.label)
+        if info.indent:
+            self.name.setIndent(12)
+        self.value = QtWidgets.QLabel('' if info.is_header else '---')
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.value.setMinimumWidth(90)
         self.step = QtWidgets.QLabel('')
         self.step.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.keys = QtWidgets.QLabel(info.keys)
+        self.keys = QtWidgets.QLabel('')
         for col, label in enumerate(self.labels):
             label.setTextInteractionFlags(Qt.NoTextInteraction)
             grid.addWidget(label, row, col)
@@ -76,7 +88,8 @@ class _Row:
             font = label.font()
             font.setBold(selected)
             label.setFont(font)
-        self.number.setText(f'{SELECTED_MARK} {self.info.number}'.strip() if selected else self.info.number)
+        marked = selected and not self.info.indent        # a pair is marked on its header only
+        self.number.setText(f'{SELECTED_MARK} {self.info.number}'.strip() if marked else self.info.number)
         self.number.setStyleSheet(f'color: {ARMED_COLOR};' if selected else 'color: gray;')
         self.keys.setStyleSheet('' if selected else 'color: gray;')
 
@@ -91,7 +104,8 @@ class JogPanel(QtWidgets.QFrame):
     armed_changed = QtCore.Signal(bool)
     settings_toggled = QtCore.Signal(bool)
     always_on_top_toggled = QtCore.Signal(bool)
-    row_clicked = QtCore.Signal(str)
+    group_clicked = QtCore.Signal(int)
+    context_requested = QtCore.Signal(int, str, QtCore.QPoint)   # group, actuator ('' = pair header), global pos
 
     def __init__(self, keyboard: KeyboardInput, parent: QtWidgets.QWidget = None):
         super().__init__(parent)
@@ -99,7 +113,8 @@ class JogPanel(QtWidgets.QFrame):
         self.setObjectName('jog_panel')
         self.setFocusPolicy(Qt.StrongFocus)
         self._armed: Optional[bool] = None
-        self._rows: Dict[str, _Row] = {}
+        self._rows: Dict[str, _Row] = {}          # actuator rows
+        self._headers: Dict[int, _Row] = {}       # pair header rows, per group
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -138,7 +153,7 @@ class JogPanel(QtWidgets.QFrame):
         self.empty_label.setStyleSheet('color: gray;')
         layout.addWidget(self.empty_label)
 
-        self.hint_label = QtWidgets.QLabel(HINT)
+        self.hint_label = QtWidgets.QLabel(hint_text('W A S D'))
         self.hint_label.setStyleSheet('color: gray; font-size: 8pt;')
         layout.addWidget(self.hint_label)
 
@@ -176,21 +191,32 @@ class JogPanel(QtWidgets.QFrame):
         self.settings_toggled.emit(show)
 
     def set_rows(self, rows: Iterable[RowInfo]):
-        for row in self._rows.values():
+        for row in list(self._rows.values()) + list(self._headers.values()):
             row.remove(self.grid)
         self._rows = {}
+        self._headers = {}
         for i, info in enumerate(rows):
-            self._rows[info.name] = _Row(self.grid, i, info)
+            row = _Row(self.grid, i, info)
+            if info.is_header:
+                self._headers[info.group] = row
+            else:
+                self._rows[info.actuator] = row
         self.empty_label.setVisible(not self._rows)
         self.hint_label.setVisible(bool(self._rows))
+
+    def set_hint(self, move_keys_label: str):
+        self.hint_label.setText(hint_text(move_keys_label))
 
     def row_names(self) -> List[str]:
         return list(self._rows)
 
-    def set_selected(self, names: Iterable[str]):
-        names = set(names)
-        for name, row in self._rows.items():
-            row.set_selected(name in names)
+    def header_text(self, group: int) -> str:
+        row = self._headers.get(group)
+        return row.name.text() if row is not None else ''
+
+    def set_selected(self, group: int):
+        for row in list(self._rows.values()) + list(self._headers.values()):
+            row.set_selected(row.info.group == group)
 
     def selected_names(self) -> List[str]:
         return [name for name, row in self._rows.items() if row.name.font().bold()]
@@ -233,11 +259,11 @@ class JogPanel(QtWidgets.QFrame):
         self.message_label.setStyleSheet(f'color: {WARNING_COLOR};' if warning else 'color: gray;')
         self.message_label.setVisible(bool(text))
 
-    def row_at(self, pos: QtCore.QPoint) -> Optional[str]:
+    def row_at(self, pos: QtCore.QPoint) -> Optional[RowInfo]:
         child = self.childAt(pos)
-        for name, row in self._rows.items():
+        for row in list(self._rows.values()) + list(self._headers.values()):
             if child in row.labels:
-                return name
+                return row.info
         return None
 
     # ------------------------------------------------------------------ focus / armed state
@@ -278,10 +304,20 @@ class JogPanel(QtWidgets.QFrame):
     def mousePressEvent(self, event: QtGui.QMouseEvent):
         self.setFocus(Qt.MouseFocusReason)
         pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
-        name = self.row_at(pos)
-        if name is not None:
-            self.row_clicked.emit(name)
+        info = self.row_at(pos)
+        if info is not None and event.button() == Qt.LeftButton:
+            self.group_clicked.emit(info.group)
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent):
+        info = self.row_at(event.pos())
+        if info is None:
+            super().contextMenuEvent(event)
+            return
+        self.setFocus(Qt.MouseFocusReason)
+        self.group_clicked.emit(info.group)
+        self.context_requested.emit(info.group, info.actuator or '', event.globalPos())
+        event.accept()
 
     # ------------------------------------------------------------------ keys
     def keyPressEvent(self, event: QtGui.QKeyEvent):

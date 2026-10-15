@@ -3,7 +3,7 @@ import pytest
 
 from helpers import app
 from pymodaq_plugins_keyboardjog.core import keys
-from pymodaq_plugins_keyboardjog.core.model import Binding, JogSetup, arrow_keymap, build_groups, build_keymap
+from pymodaq_plugins_keyboardjog.core.model import Binding, Group, JogSetup, build_groups, build_keymap, direction_map
 
 
 @pytest.fixture(autouse=True)
@@ -50,16 +50,35 @@ def test_digits():
     assert keys.digit_of(keys.parse_key('A'), native_scan_code=30, platform='win32') is None
 
 
+def test_movement_keys():
+    d = keys.direction_of
+    w, a, z, q = (keys.parse_key(k) for k in 'WAZQ')
+    # letters when no physical key position is known (macOS, synthetic events)
+    assert d(w, 0, 'wasd', 'darwin') == keys.UP and d(a, 0, 'wasd', 'win32') == keys.LEFT
+    # physical position on Windows / Linux: the Z key of an AZERTY keyboard is where W is on QWERTY
+    assert d(z, 0x11, 'wasd', 'win32') == keys.UP and d(q, 0x1E, 'wasd', 'win32') == keys.LEFT
+    assert d(w, 0x2C, 'wasd', 'win32') is None                  # the W letter of AZERTY is elsewhere
+    assert d(z, 25, 'wasd', 'linux') == keys.UP
+    assert d(keys.KEY_LEFT, 0, 'wasd') is None and d(keys.KEY_LEFT, 0, 'arrows') == keys.LEFT
+    assert d(w, 0, 'arrows', 'darwin') is None
+    assert d(keys.KEY_UP, 0, 'both') == keys.UP and d(w, 0, 'both', 'darwin') == keys.UP
+    assert keys.wasd_letters(azerty=True)[keys.UP] == 'Z'
+    assert keys.movement_reserved_keys('wasd', azerty=False) == {w, a, keys.parse_key('S'), keys.parse_key('D')}
+    assert keys.movement_reserved_keys('arrows') == frozenset()
+
+
 def test_default_groups_one_per_actuator():
     setup = JogSetup(displayed=['A', 'B', 'C'])
     groups, problems = build_groups(setup, ['A', 'B', 'C', 'D'])
-    assert groups == [['A'], ['B'], ['C']] and not problems
+    assert [g.actuators for g in groups] == [['A'], ['B'], ['C']] and not problems
 
 
-def test_pairs_make_one_group_at_the_place_of_their_first_member():
-    setup = JogSetup(displayed=['A', 'C'], bindings=[Binding.pair('D', 'B')])
-    groups, problems = build_groups(setup, ['A', 'B', 'C', 'D'])
-    assert groups == [['A'], ['D', 'B'], ['C']]
+def test_pairs_make_one_named_group_at_the_place_of_their_first_member():
+    setup = JogSetup(displayed=['A', 'C'], bindings=[Binding.pair('D', 'B', 'Stage'), Binding.pair('E', 'F')])
+    groups, problems = build_groups(setup, ['A', 'B', 'C', 'D', 'E', 'F'])
+    assert [g.actuators for g in groups] == [['A'], ['D', 'B'], ['C'], ['E', 'F']]
+    assert groups[1].name == 'Stage' and groups[3].name == 'E / F'      # default name
+    assert groups[1].is_pair and not groups[0].is_pair
     assert not problems
 
 
@@ -67,20 +86,27 @@ def test_pair_problems():
     setup = JogSetup(bindings=[Binding.pair('A', 'B'), Binding.pair('B', 'C'), Binding.pair('D', 'D'),
                                Binding.pair('E', '')])
     groups, problems = build_groups(setup, ['A', 'B', 'C', 'D', 'E'])
-    assert groups == [['A', 'B'], ['C'], ['D'], ['E']]
+    assert [g.actuators for g in groups] == [['A', 'B'], ['C'], ['D'], ['E']]
     assert len(problems) == 2
 
 
-def test_arrow_keymap():
-    pair = arrow_keymap(['X', 'Y'], 0)
-    assert (pair[keys.KEY_LEFT].actuator, pair[keys.KEY_LEFT].direction) == ('X', -1)
-    assert (pair[keys.KEY_RIGHT].actuator, pair[keys.KEY_RIGHT].direction) == ('X', +1)
-    assert (pair[keys.KEY_DOWN].actuator, pair[keys.KEY_DOWN].direction) == ('Y', -1)
-    assert (pair[keys.KEY_UP].actuator, pair[keys.KEY_UP].direction) == ('Y', +1)
-    single = arrow_keymap(['Z'])
+def test_direction_map():
+    pair = direction_map(Group(['X', 'Y']), 0)
+    assert (pair[keys.LEFT].actuator, pair[keys.LEFT].direction) == ('X', -1)
+    assert (pair[keys.RIGHT].actuator, pair[keys.RIGHT].direction) == ('X', +1)
+    assert (pair[keys.DOWN].actuator, pair[keys.DOWN].direction) == ('Y', -1)
+    assert (pair[keys.UP].actuator, pair[keys.UP].direction) == ('Y', +1)
+    single = direction_map(Group(['Z']))
     assert {a.actuator for a in single.values()} == {'Z'}
-    assert single[keys.KEY_UP].direction == +1 and single[keys.KEY_LEFT].direction == -1
-    assert arrow_keymap([]) == {}
+    assert single[keys.UP].direction == +1 and single[keys.LEFT].direction == -1
+    assert direction_map(None) == {}
+
+
+def test_extra_keys_cannot_use_the_movement_keys():
+    setup = JogSetup(bindings=[Binding.single('Z', 'A', 'B')])
+    keymap, problems = build_keymap(setup, keys.movement_reserved_keys('wasd', azerty=False))
+    assert keys.parse_key('A') not in keymap and keys.parse_key('B') in keymap
+    assert any('reserved' in p for p in problems)
 
 
 def test_extra_keys_keymap_and_conflicts():

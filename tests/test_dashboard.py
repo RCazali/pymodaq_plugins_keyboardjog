@@ -1,4 +1,4 @@
-"""The real PyMoDAQ Dashboard discovers and loads the extension through the ``pymodaq.extensions`` entry point.
+﻿"""The real PyMoDAQ Dashboard discovers and loads the extension through the ``pymodaq.extensions`` entry point.
 
 * PyMoDAQ 5.1: preset file + ``DashBoard.load_extension_from_name('Keyboard Jog')``
 * PyMoDAQ >= 5.2: experiment file + ``load_dashboard_with_experiment(..., 'KEYBOARDJOG')``
@@ -97,6 +97,6 @@ def test_dashboard_runs_the_extension(loaded):
     win.activateWindow()
     ext.panel.setFocus()
     assert wait(lambda: ext.panel.armed, 5)
-    QtWidgets.QApplication.sendEvent(ext.panel, key_event('press', QtCore.Qt.Key_Right))
-    QtWidgets.QApplication.sendEvent(ext.panel, key_event('release', QtCore.Qt.Key_Right))
+    QtWidgets.QApplication.sendEvent(ext.panel, key_event('press', QtCore.Qt.Key_D))
+    QtWidgets.QApplication.sendEvent(ext.panel, key_event('release', QtCore.Qt.Key_D))
     assert wait(lambda: abs(ext.values['Jog X'] - x0 - 0.05) < 1e-3, 15)

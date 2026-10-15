@@ -6,7 +6,7 @@ Bindings are stored as portable key names (``'Left'``, ``'PgUp'``, ``'A'``...), 
 from __future__ import annotations
 
 import sys
-from typing import Optional
+from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui
 
@@ -48,6 +48,76 @@ RESERVED_KEYS = STEP_UP_KEYS | STEP_DOWN_KEYS | MODIFIER_KEYS | ARROW_CODES | fr
 
 #: keys of the selected group: (first axis -, first axis +, second axis -, second axis +)
 ARROW_KEYS = ('Left', 'Right', 'Down', 'Up')
+
+# ------------------------------------------------------------------------------------------- movement keys
+LEFT, RIGHT, DOWN, UP = 'left', 'right', 'down', 'up'
+DIRECTIONS = (LEFT, RIGHT, DOWN, UP)
+
+WASD = 'wasd'
+ARROWS = 'arrows'
+BOTH = 'both'
+MOVE_KEY_SETS = (WASD, ARROWS, BOTH)
+
+_ARROW_DIRECTIONS = {KEY_LEFT: LEFT, KEY_RIGHT: RIGHT, KEY_DOWN: DOWN, KEY_UP: UP}
+#: physical positions of W A S D (they read Z Q S D on an AZERTY keyboard)
+_WASD_SCAN_CODES = {
+    'win32': {0x11: UP, 0x1E: LEFT, 0x1F: DOWN, 0x20: RIGHT},          # set 1 scan codes
+    'linux': {25: UP, 38: LEFT, 39: DOWN, 40: RIGHT},                   # X11 / evdev key codes + 8
+}
+_WASD_KEYS = {key_int(Qt.Key_W): UP, key_int(Qt.Key_A): LEFT, key_int(Qt.Key_S): DOWN, key_int(Qt.Key_D): RIGHT}
+
+
+def _platform_family(platform: str) -> str:
+    return 'linux' if platform.startswith('linux') else platform
+
+
+def direction_of(key: int, native_scan_code: int = 0, move_keys: str = WASD,
+                 platform: str = sys.platform) -> Optional[str]:
+    """Movement direction of a key event, None if it is not a movement key of this key set
+
+    WASD keys are recognized by their physical position on Windows and Linux (so the same keys work on QWERTY,
+    QWERTZ and AZERTY layouts), by their letter elsewhere.
+    """
+    if move_keys in (ARROWS, BOTH) and key in _ARROW_DIRECTIONS:
+        return _ARROW_DIRECTIONS[key]
+    if move_keys in (WASD, BOTH):
+        scan_codes = _WASD_SCAN_CODES.get(_platform_family(platform))
+        if scan_codes is not None and native_scan_code:
+            return scan_codes.get(native_scan_code)
+        return _WASD_KEYS.get(key)
+    return None
+
+
+def is_azerty() -> bool:
+    """Best guess of an AZERTY keyboard from the input locale (only used for the labels)"""
+    try:
+        from qtpy import QtGui as _QtGui
+        name = _QtGui.QGuiApplication.inputMethod().locale().name()
+    except Exception:
+        return False
+    return name.startswith('fr_') and name not in ('fr_CA', 'fr_CH')
+
+
+def wasd_letters(azerty: bool = None) -> Dict[str, str]:
+    """Letters printed on the WASD keys: {direction: letter}"""
+    if azerty is None:
+        azerty = is_azerty()
+    return {UP: 'Z', LEFT: 'Q', DOWN: 'S', RIGHT: 'D'} if azerty else {UP: 'W', LEFT: 'A', DOWN: 'S', RIGHT: 'D'}
+
+
+def movement_reserved_keys(move_keys: str, azerty: bool = None) -> frozenset:
+    """Key codes the extra keys cannot use with this movement key set"""
+    keys = set()
+    if move_keys in (WASD, BOTH):
+        keys |= {parse_key(letter) for letter in wasd_letters(azerty).values()}
+    return frozenset(k for k in keys if k is not None)
+
+
+def movement_labels(move_keys: str, azerty: bool = None) -> Dict[str, str]:
+    """{direction: label} shown in the main view"""
+    if move_keys == ARROWS:
+        return {LEFT: '←', RIGHT: '→', DOWN: '↓', UP: '↑'}
+    return wasd_letters(azerty)
 
 
 def digit_of(key: int, native_scan_code: int = 0, platform: str = sys.platform) -> Optional[int]:

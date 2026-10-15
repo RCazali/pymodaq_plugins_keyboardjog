@@ -15,7 +15,8 @@ from typing import Dict
 from qtpy import QtCore
 
 from .actions import InputSource, MoveAction
-from .keys import CONTROL_KEY, MODIFIER_KEYS, SHIFT_KEY, STEP_DOWN_KEYS, STEP_UP_KEYS, digit_of, key_int
+from .keys import (CONTROL_KEY, MODIFIER_KEYS, SHIFT_KEY, STEP_DOWN_KEYS, STEP_UP_KEYS, WASD, digit_of,
+                   direction_of, key_int)
 
 Qt = QtCore.Qt
 
@@ -51,8 +52,10 @@ class KeyboardInput(InputSource):
     def __init__(self, parent: QtCore.QObject = None):
         super().__init__(parent)
         self._keymap: Dict[int, MoveAction] = {}
-        self._arrows: Dict[int, MoveAction] = {}
+        self._directions: Dict[str, MoveAction] = {}
+        self._move_keys = WASD
         self._held: Dict[int, MoveAction] = {}
+        self._held_movement = set()            # held keys that are movement keys of the selected group
         self._multiplier = 1.0
 
     @property
@@ -68,19 +71,27 @@ class KeyboardInput(InputSource):
         self.release_all()
         self._keymap = dict(keymap)
 
-    def set_arrow_map(self, arrows: Dict[int, MoveAction]):
-        """Arrow keys of the newly selected group: the arrows currently held are released first"""
-        for key in list(self._held):
-            if key in self._arrows:
-                self.move_released.emit(self._held.pop(key))
-        self._arrows = dict(arrows)
+    def set_direction_map(self, directions: Dict[str, MoveAction], move_keys: str = None):
+        """Moves of the newly selected group per direction (and the movement key set): the movement keys
+        currently held are released first"""
+        for key in list(self._held_movement):
+            action = self._held.pop(key, None)
+            if action is not None:
+                self.move_released.emit(action)
+        self._held_movement.clear()
+        self._directions = dict(directions)
+        if move_keys is not None:
+            self._move_keys = move_keys
 
-    def _action(self, key: int):
-        action = self._arrows.get(key)
-        return action if action is not None else self._keymap.get(key)
+    def _action(self, key: int, scan_code: int = 0):
+        """(action, is a movement key)"""
+        direction = direction_of(key, scan_code, self._move_keys)
+        if direction is not None and direction in self._directions:
+            return self._directions[direction], True
+        return self._keymap.get(key), False
 
     def handles(self, key: int, scan_code: int = 0) -> bool:
-        return (self._action(key) is not None or key in STEP_UP_KEYS or key in STEP_DOWN_KEYS
+        return (self._action(key, scan_code)[0] is not None or key in STEP_UP_KEYS or key in STEP_DOWN_KEYS
                 or key in MODIFIER_KEYS or digit_of(key, scan_code) is not None)
 
     def key_press(self, event) -> bool:
@@ -96,10 +107,12 @@ class KeyboardInput(InputSource):
         if key in STEP_DOWN_KEYS:
             self.step_scale_requested.emit(-1)
             return True
-        action = self._action(key)
+        action, movement = self._action(key, scan_code)
         if action is not None:
             if key not in self._held:
                 self._held[key] = action
+                if movement:
+                    self._held_movement.add(key)
                 self.move_pressed.emit(action)
             return True
         number = digit_of(key, scan_code)
@@ -115,6 +128,7 @@ class KeyboardInput(InputSource):
             return self.handles(key, scan_code)
         self._set_multiplier(modifier_multiplier(event, pressed=False))
         action = self._held.pop(key, None)
+        self._held_movement.discard(key)
         if action is not None:
             self.move_released.emit(action)
             return True
@@ -124,10 +138,12 @@ class KeyboardInput(InputSource):
         for action in self._held.values():
             self.move_released.emit(action)
         self._held.clear()
+        self._held_movement.clear()
 
     def reset(self):
         """Focus lost: forget the held keys and the modifiers, ask the controller to stop repeating"""
         self._held.clear()
+        self._held_movement.clear()
         self._set_multiplier(1.0)
         self.reset_requested.emit()
 

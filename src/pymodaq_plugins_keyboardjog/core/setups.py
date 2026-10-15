@@ -13,6 +13,7 @@ from typing import List, Optional
 from pymodaq_gui.parameter import Parameter, ioxml
 from pymodaq_utils.logger import set_logger, get_module_name
 
+from .keys import MOVE_KEY_SETS
 from .model import AxisBinding, Binding, JogSetup, MOTION_MODES, PAIR, SINGLE, STEP_MODE
 
 logger = set_logger(get_module_name(__file__))
@@ -21,7 +22,7 @@ SETUP_VERSION = 1
 LAST_SETUP_FILE = 'last_setup.txt'
 EXTENSION_FOLDER = 'KeyboardJog'  # same name as CustomApp.get_local_folder() of PyMoDAQ >= 5.3
 
-_GENERAL = (('motion_mode', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'),
+_GENERAL = (('motion_mode', 'str'), ('move_keys', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'),
             ('min_interval_ms', 'int'), ('stop_on_focus_loss', 'bool'), ('move_timeout_s', 'float'))
 
 
@@ -56,7 +57,8 @@ def setup_to_parameter(setup: JogSetup) -> Parameter:
             {'name': 'key_plus', 'type': 'str', 'value': axis.key_plus}]}
             for j, axis in enumerate(binding.axes)]
         bindings.append({'name': f'b{i:02d}', 'type': 'group',
-                         'children': [{'name': 'kind', 'type': 'str', 'value': binding.kind}] + axes})
+                         'children': [{'name': 'kind', 'type': 'str', 'value': binding.kind},
+                                      {'name': 'name', 'type': 'str', 'value': binding.name}] + axes})
     return Parameter.create(name='keyboard_jog_setup', type='group', children=[
         {'name': 'version', 'type': 'int', 'value': SETUP_VERSION},
         {'name': 'general', 'type': 'group', 'children': general},
@@ -99,6 +101,8 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
     values = {name: _value(general, name, getattr(defaults, name)) for name, _ in _GENERAL}
     if values['motion_mode'] not in MOTION_MODES:
         values['motion_mode'] = STEP_MODE
+    if values['move_keys'] not in MOVE_KEY_SETS:
+        values['move_keys'] = defaults.move_keys
     if values['step_factor'] <= 1:
         values['step_factor'] = defaults.step_factor
     displayed = [str(c.value()) for c in _children(param, 'displayed') if c.value()]
@@ -114,7 +118,7 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
         axes = [AxisBinding(_value(a, 'actuator', ''), _value(a, 'key_minus', ''), _value(a, 'key_plus', ''))
                 for a in group.children() if a.name().startswith('axis')]
         if kind == PAIR and len(axes) == 2 or kind == SINGLE and len(axes) == 1:
-            bindings.append(Binding(kind, axes))
+            bindings.append(Binding(kind, axes, _value(group, 'name', '')))
         else:
             logger.warning(f'malformed binding {group.name()} ignored')
     return JogSetup(displayed=displayed, bindings=bindings, steps=steps, **values)

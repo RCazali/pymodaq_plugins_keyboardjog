@@ -5,9 +5,10 @@ the keyboard while showing their position. Works without any configuration:
 
 * Green border: the window has the keyboard focus, the keys move the actuators.
   Red border: the focus is elsewhere, every key is ignored (and the actuators it was moving are stopped).
-* Every actuator has a number: keys 1..9 (or a click on its row) select it, the arrow keys move the selection.
-  Two actuators can be paired in the settings (one number: Left/Right move the first, Down/Up the second), and an
-  actuator can get extra keys of its own (e.g. PgDown / PgUp), active whatever the selection.
+* Every actuator has a number: keys 1..9 (or a click on its row) select it, the movement keys (W A S D by their
+  position, or the arrows) move the selection. Two actuators can be paired with a right-click on a row (one number
+  and a name: A/D move the first, S/W the second), and an actuator can get extra keys of its own (e.g. PgDown /
+  PgUp) in the settings, active whatever the selection.
 * Step mode (default): one key press = one relative step. Continuous mode: steps repeated while the key is held,
   each one after the previous move is done (never queued); Shift = step x10, Ctrl = step /10 while held.
 * ``+`` / ``-``: multiply / divide the step of the selection by the step factor (10 by default).
@@ -32,9 +33,10 @@ from pymodaq.extensions.utils import CustomExt  # still valid in 5.3 (pymodaq.ut
 from pymodaq_plugins_keyboardjog.utils import Config as PluginConfig
 from pymodaq_plugins_keyboardjog.core.controller import MotionController
 from pymodaq_plugins_keyboardjog.core.input import KeyboardInput
-from pymodaq_plugins_keyboardjog.core.keys import key_label, key_name, normalize_key_name
-from pymodaq_plugins_keyboardjog.core.model import (CONTINUOUS_MODE, Binding, JogSetup, arrow_keymap, build_groups,
-                                                     build_keymap)
+from pymodaq_plugins_keyboardjog.core.keys import (DOWN, LEFT, RIGHT, UP, is_azerty, key_label, key_name,
+                                                    movement_labels, movement_reserved_keys, normalize_key_name)
+from pymodaq_plugins_keyboardjog.core.model import (CONTINUOUS_MODE, Binding, Group, JogSetup, build_groups,
+                                                     build_keymap, direction_map)
 from pymodaq_plugins_keyboardjog.core.ports import ActuatorPort, actuator_modules, make_ports
 from pymodaq_plugins_keyboardjog.core.setups import SetupStore, clean_name, default_folder
 from pymodaq_plugins_keyboardjog.ui import settings as ui_settings
@@ -49,8 +51,8 @@ CLASS_NAME = 'KeyboardJog'
 Qt = QtCore.Qt
 
 HELP = ('Click this window: green border = the keys move the actuators, red = keys ignored.\n'
-        '1-9 or a click on a row: select an actuator (or a pair). Arrows: move the selection\n'
-        '(pair: Left/Right the first actuator, Down/Up the second one).\n'
+        '1-9 or a click on a row: select an actuator (or a pair). W A S D (or the arrows, see the settings): move\n'
+        'the selection (pair: A/D the first actuator, S/W the second one). Right-click a row: pair / rename / unpair.\n'
         '+ / - : multiply / divide the step of the selection. Continuous mode: Shift = step x10, Ctrl = step /10.\n'
         'Settings: pairs, extra keys, steps, displayed actuators, setups.')
 
@@ -77,9 +79,11 @@ class KeyboardJog(CustomExt):
         self.values: Dict[str, Optional[float]] = {}
         self.setup = JogSetup()
         self.setup_name = ''
-        self.groups: List[List[str]] = []
+        self.groups: List[Group] = []
         self.selected = 0                       # index of the selected group
         self._extra_keys: Dict[str, List[str]] = {}
+        self._azerty = is_azerty()              # labels of the WASD keys only (they are matched by position)
+        self._labels = movement_labels(self.setup.move_keys, self._azerty)
         self._dirty = False
         self._auto_display = True               # no setup yet: every actuator is displayed
         self.panel = JogPanel(self.keyboard)
@@ -141,7 +145,8 @@ class KeyboardJog(CustomExt):
         self.panel.always_on_top_toggled.connect(self._on_top_checkbox)
         self.keyboard.step_scale_requested.connect(self.scale_steps)
         self.keyboard.select_requested.connect(lambda number: self.select_group(number - 1))
-        self.panel.row_clicked.connect(self.select_actuator)
+        self.panel.group_clicked.connect(self.select_group)
+        self.panel.context_requested.connect(self._show_group_menu)
         self.controller.step_changed.connect(self._on_step_changed)
         self.controller.message.connect(lambda text: self.show_message(text, warning=True))
         actions = {('setup', 'load'): self._load_selected, ('setup', 'save'): self.save_setup,
@@ -239,7 +244,7 @@ class KeyboardJog(CustomExt):
         self.controller.move_timeout_s = setup.move_timeout_s
         for name in self.ports:
             self.controller.steps[name] = setup.step(name)
-        keymap, problems = build_keymap(setup)
+        keymap, problems = build_keymap(setup, movement_reserved_keys(setup.move_keys, self._azerty))
         self.keyboard.set_keymap(keymap)
         selected_before = self.selected_group()
         self.groups, group_problems = build_groups(setup, list(self.ports))
@@ -257,15 +262,24 @@ class KeyboardJog(CustomExt):
         units = self.units()
         rows = []
         for index, group in enumerate(self.groups):
-            for j, name in enumerate(group):
-                number = str(index + 1) if j == 0 and index < 9 else ''
-                rows.append(RowInfo(name, units.get(name, ''), number))
+            number = str(index + 1) if index < 9 else ''
+            if group.is_pair:
+                rows.append(RowInfo(group.name, index, number=number))
+                rows += [RowInfo(name, index, units.get(name, ''), actuator=name, indent=True)
+                         for name in group.actuators]
+            else:
+                name = group.actuators[0]
+                rows.append(RowInfo(name, index, units.get(name, ''), number, actuator=name))
         self.panel.set_rows(rows)
         for row in rows:
-            self.panel.set_value(row.name, self.values.get(row.name))
-            self.panel.set_step(row.name, self.controller.step(row.name))
+            if not row.is_header:
+                self.panel.set_value(row.actuator, self.values.get(row.actuator))
+                self.panel.set_step(row.actuator, self.controller.step(row.actuator))
         self.panel.set_mode_text('continuous' if setup.motion_mode == CONTINUOUS_MODE else 'step')
-        self.selected = next((i for i, g in enumerate(self.groups) if selected_before and g[0] in selected_before), 0)
+        self._labels = movement_labels(setup.move_keys, self._azerty)
+        self.panel.set_hint(' '.join(self._labels[d] for d in (UP, LEFT, DOWN, RIGHT)))
+        self.selected = next((i for i, g in enumerate(self.groups)
+                              if selected_before and g.actuators[0] in selected_before), 0)
         self._apply_selection()
         self.panel.on_top_check.blockSignals(True)
         self.panel.on_top_check.setChecked(setup.always_on_top)
@@ -276,12 +290,13 @@ class KeyboardJog(CustomExt):
 
     # ---------------------------------------------------------------- selection
     def selected_group(self) -> List[str]:
+        """Actuators of the selected group"""
         if 0 <= self.selected < len(self.groups):
-            return list(self.groups[self.selected])
+            return list(self.groups[self.selected].actuators)
         return []
 
     def select_group(self, index: int):
-        """Select the group of this index (0 = number 1): the arrow keys and +/- act on it"""
+        """Select the group of this index (0 = number 1): the movement keys and +/- act on it"""
         if not 0 <= index < len(self.groups):
             self.show_message(f'No actuator number {index + 1}')
             return
@@ -296,17 +311,83 @@ class KeyboardJog(CustomExt):
                 return
 
     def _apply_selection(self):
-        group = self.selected_group()
-        self.keyboard.set_arrow_map(arrow_keymap(group, self.selected))
-        self.panel.set_selected(group)
+        group = self.groups[self.selected] if 0 <= self.selected < len(self.groups) else None
+        self.keyboard.set_direction_map(direction_map(group, self.selected), self.setup.move_keys)
+        self.panel.set_selected(self.selected)
+        k = self._labels
         for g in self.groups:
-            for j, name in enumerate(g):
+            for j, name in enumerate(g.actuators):
                 parts = []
-                if g == group:
-                    parts.append('←→ ↓↑' if len(g) == 1 else ('←/→' if j == 0 else '↓/↑'))
+                if g is group:
+                    if not g.is_pair:
+                        parts.append(f'{k[LEFT]}/{k[RIGHT]} {k[DOWN]}/{k[UP]}')
+                    else:
+                        parts.append(f'{k[LEFT]}/{k[RIGHT]}' if j == 0 else f'{k[DOWN]}/{k[UP]}')
                 if name in self._extra_keys:
-                    parts.append('/'.join(k or '–' for k in self._extra_keys[name]))
+                    parts.append('/'.join(x or '–' for x in self._extra_keys[name]))
                 self.panel.set_keys(name, '  '.join(parts))
+
+    # ---------------------------------------------------------------- pairs from the main view
+    def _show_group_menu(self, index: int, actuator: str, global_pos: QtCore.QPoint):
+        menu = self.group_menu(index, actuator)
+        if menu is not None and not menu.isEmpty():
+            menu.exec(global_pos) if hasattr(menu, 'exec') else menu.exec_(global_pos)
+
+    def group_menu(self, index: int, actuator: str = '') -> Optional[QtWidgets.QMenu]:
+        """Right-click menu of a row: pair a single actuator with another one, rename / unpair a pair"""
+        if not 0 <= index < len(self.groups):
+            return None
+        group = self.groups[index]
+        menu = QtWidgets.QMenu(self.panel)
+        if group.is_pair:
+            menu.addAction(f"Rename '{group.name}'…", lambda: self.rename_pair(index))
+            menu.addAction('Unpair', lambda: self.unpair(index))
+        else:
+            name = group.actuators[0]
+            others = [g.actuators[0] for g in self.groups if not g.is_pair and g is not group]
+            sub = menu.addMenu(f"Pair '{name}' with")
+            sub.setEnabled(bool(others))
+            for other in others:
+                sub.addAction(other, lambda o=other: self.pair_actuators(name, o))
+        return menu
+
+    def _ask_name(self, title: str, default: str) -> Optional[str]:
+        text, ok = QtWidgets.QInputDialog.getText(self.mainwindow, title, 'Name of the pair:', text=default)
+        return text.strip() if ok else None
+
+    def pair_actuators(self, first: str, second: str, name: Optional[str] = None):
+        """Pair two actuators (first: horizontal keys, second: vertical keys) and select the new pair"""
+        if name is None:
+            name = self._ask_name('New pair', f'{first} / {second}')
+            if name is None:
+                return
+        ui_settings.add_binding(self.settings, Binding.pair(first, second, name), list(self.ports),
+                                self._remove_binding)
+        self.apply_settings()
+        self.select_actuator(first)
+        self._set_dirty(True)
+        self.panel.setFocus(Qt.OtherFocusReason)
+
+    def _pair_param(self, index: int):
+        if not 0 <= index < len(self.groups) or not self.groups[index].is_pair:
+            return None
+        return ui_settings.pair_group(self.settings, self.groups[index].actuators)
+
+    def rename_pair(self, index: int, name: Optional[str] = None):
+        param = self._pair_param(index)
+        if param is None:
+            return
+        if name is None:
+            name = self._ask_name('Rename pair', self.groups[index].name)
+            if name is None:
+                return
+        param.child('name').setValue(name)          # value_changed applies it
+        self.panel.setFocus(Qt.OtherFocusReason)
+
+    def unpair(self, index: int):
+        param = self._pair_param(index)
+        if param is not None:
+            self._remove_binding(param)
 
     def _on_step_changed(self, name: str, value: float):
         self.panel.set_step(name, value)

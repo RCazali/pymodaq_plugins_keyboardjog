@@ -3,9 +3,9 @@
 Keyboard model:
 
 * the actuators of the main view form numbered **groups**: one group per actuator, except the actuators the user
-  put together in a **pair**. One group is **selected** (keys 1..9 or a click); the arrow keys move it: Left / Right
-  the first actuator, Down / Up the second one of a pair (both arrow pairs move a single actuator); ``+`` / ``-``
-  scale its steps;
+  put together in a named **pair**. One group is **selected** (keys 1..9 or a click); the movement keys (W A S D
+  and / or the arrows) move it: left / right the first actuator, down / up the second one of a pair (both move a
+  single actuator); ``+`` / ``-`` scale its steps;
 * **extra keys** bind an actuator to two keys of the user's choice, active whatever the selection.
 
 A setup holds the displayed actuators, the pairs, the extra keys, the step size of each actuator and the options.
@@ -13,10 +13,10 @@ A setup holds the displayed actuators, the pairs, the extra keys, the step size 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .actions import MoveAction
-from .keys import ARROW_KEYS, RESERVED_KEYS, key_name, parse_key
+from .keys import DOWN, LEFT, MOVE_KEY_SETS, RESERVED_KEYS, RIGHT, UP, WASD, key_name, parse_key  # noqa: F401
 
 STEP_MODE = 'step'
 CONTINUOUS_MODE = 'continuous'
@@ -30,7 +30,7 @@ DEFAULT_STEP = 1.0
 
 @dataclass
 class AxisBinding:
-    """One actuator, with its two keys for an extra binding (unused in a pair: the arrows move the pairs)"""
+    """One actuator, with its two keys for an extra binding (unused in a pair: the movement keys move the pairs)"""
     actuator: str = ''
     key_minus: str = ''
     key_plus: str = ''
@@ -38,13 +38,17 @@ class AxisBinding:
 
 @dataclass
 class Binding:
-    """A pair of actuators (one group moved with the arrows) or a single actuator on extra keys"""
+    """A named pair of actuators (one group moved with the movement keys) or a single actuator on extra keys"""
     kind: str = SINGLE
     axes: List[AxisBinding] = field(default_factory=list)
+    name: str = ''
 
     @classmethod
-    def pair(cls, x: str = '', y: str = '') -> 'Binding':
-        return cls(PAIR, [AxisBinding(x), AxisBinding(y)])
+    def pair(cls, x: str = '', y: str = '', name: str = '') -> 'Binding':
+        return cls(PAIR, [AxisBinding(x), AxisBinding(y)], name)
+
+    def title(self) -> str:
+        return self.name or ' / '.join(a.actuator or '-' for a in self.axes)
 
     @classmethod
     def single(cls, actuator: str = '', key_minus: str = '', key_plus: str = '') -> 'Binding':
@@ -61,6 +65,7 @@ class JogSetup:
     bindings: List[Binding] = field(default_factory=list)
     steps: Dict[str, float] = field(default_factory=dict)
     motion_mode: str = STEP_MODE
+    move_keys: str = WASD
     step_factor: float = 10.0
     always_on_top: bool = True
     min_interval_ms: int = 0
@@ -109,7 +114,7 @@ class JogSetup:
                 else:
                     axes.append(AxisBinding(axis.actuator, axis.key_minus, axis.key_plus))
             if any(a.actuator for a in axes):
-                bindings.append(Binding(b.kind, axes))
+                bindings.append(Binding(b.kind, axes, b.name))
         setup = JogSetup(**{**self.__dict__,
                             'displayed': [a for a in self.displayed if a in present],
                             'bindings': bindings,
@@ -117,10 +122,24 @@ class JogSetup:
         return setup, warnings
 
 
-def build_groups(setup: JogSetup, order: Sequence[str]) -> Tuple[List[List[str]], List[str]]:
-    """The numbered groups of the main view (lists of 1 or 2 actuators, in the dashboard order), and the problems"""
+@dataclass
+class Group:
+    """A numbered group of the main view: one actuator, or a named pair"""
+    actuators: List[str]
+    name: str = ''                 # pairs only
+
+    @property
+    def is_pair(self) -> bool:
+        return len(self.actuators) == 2
+
+    def __contains__(self, actuator: str) -> bool:
+        return actuator in self.actuators
+
+
+def build_groups(setup: JogSetup, order: Sequence[str]) -> Tuple[List[Group], List[str]]:
+    """The numbered groups of the main view (one actuator or a pair, in the dashboard order), and the problems"""
     problems = []
-    partner: Dict[str, Tuple[str, str]] = {}
+    partner: Dict[str, Binding] = {}
     for pair in setup.pairs:
         names = [a.actuator for a in pair.axes]
         if len(names) != 2 or not all(names):
@@ -132,35 +151,38 @@ def build_groups(setup: JogSetup, order: Sequence[str]) -> Tuple[List[List[str]]
         if busy:
             problems.append(f"'{busy[0]}' is in several pairs: only the first one is used")
             continue
-        partner[names[0]] = partner[names[1]] = (names[0], names[1])
-    groups: List[List[str]] = []
+        partner[names[0]] = partner[names[1]] = pair
+    groups: List[Group] = []
     seen = set()
     for name in setup.shown_actuators(order):
         if name in seen:
             continue
         pair = partner.get(name)
-        group = list(pair) if pair is not None else [name]
+        group = Group([a.actuator for a in pair.axes], pair.title()) if pair is not None else Group([name])
         groups.append(group)
-        seen.update(group)
+        seen.update(group.actuators)
     return groups, problems
 
 
-def arrow_keymap(group: Sequence[str], group_index: int = -1) -> Dict[int, MoveAction]:
-    """Arrow keys -> moves of the selected group: Left/Right the first actuator, Down/Up the second (or the same)"""
-    if not group:
+def direction_map(group: Optional[Group], group_index: int = -1) -> Dict[str, MoveAction]:
+    """Movement direction -> move of the selected group: left/right the first actuator, down/up the second one
+    (or the same actuator for a single group)"""
+    if group is None or not group.actuators:
         return {}
-    x, y = group[0], group[1] if len(group) > 1 else group[0]
-    keys = [parse_key(k) for k in ARROW_KEYS]
-    return {keys[0]: MoveAction(x, -1, group_index), keys[1]: MoveAction(x, +1, group_index),
-            keys[2]: MoveAction(y, -1, group_index), keys[3]: MoveAction(y, +1, group_index)}
+    x = group.actuators[0]
+    y = group.actuators[1] if group.is_pair else x
+    return {LEFT: MoveAction(x, -1, group_index), RIGHT: MoveAction(x, +1, group_index),
+            DOWN: MoveAction(y, -1, group_index), UP: MoveAction(y, +1, group_index)}
 
 
-def build_keymap(setup: JogSetup) -> Tuple[Dict[int, MoveAction], List[str]]:
+def build_keymap(setup: JogSetup, reserved: Iterable[int] = ()) -> Tuple[Dict[int, MoveAction], List[str]]:
     """Key code -> move action of the extra keys, and the problems found
 
     A key used twice is a conflict: it is reported and disabled for both, so that a key never moves an actuator
-    the user did not expect. The arrows, digits, +, -, modifiers and Tab are reserved.
+    the user did not expect. The arrows, digits, +, -, modifiers, Tab and the given keys (the movement keys) are
+    reserved.
     """
+    reserved = RESERVED_KEYS | frozenset(reserved)
     problems: List[str] = []
     claims: Dict[int, List[MoveAction]] = {}
     for binding in setup.extra_keys:
@@ -175,7 +197,7 @@ def build_keymap(setup: JogSetup) -> Tuple[Dict[int, MoveAction], List[str]]:
                 if key is None:
                     problems.append(f"'{text}' ({axis.actuator} {sign}) is not a valid key")
                     continue
-                if key in RESERVED_KEYS:
+                if key in reserved:
                     problems.append(f"'{key_name(key)}' ({axis.actuator} {sign}) is reserved")
                     continue
                 claims.setdefault(key, []).append(MoveAction(axis.actuator, direction))

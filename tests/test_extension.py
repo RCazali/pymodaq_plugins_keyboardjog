@@ -1,4 +1,4 @@
-"""The extension with real DAQ_Move modules (Mock actuators of pymodaq_plugins_mock, no hardware).
+﻿"""The extension with real DAQ_Move modules (Mock actuators of pymodaq_plugins_mock, no hardware).
 
 Covers the checklist of the specification: focus green / red, no motion when red, step mode one press = one step,
 continuous mode stops on release, focus loss while a key is held, no move queueing with a slow actuator, +/- step
@@ -18,6 +18,13 @@ from pymodaq_plugins_keyboardjog.ui.panel import ARMED_COLOR, DISARMED_COLOR  # 
 pytestmark = pytest.mark.pymodaq
 Qt = QtCore.Qt
 NAMES = ('Stage X', 'Stage Y', 'Focus Z')
+
+
+@pytest.fixture(autouse=True)
+def qwerty_labels(monkeypatch):
+    """The WASD keys are matched by position; only their labels depend on the layout: fix them for the tests"""
+    import pymodaq_plugins_keyboardjog.extensions.keyboard_jog as kj
+    monkeypatch.setattr(kj, 'is_azerty', lambda: False)
 
 
 @pytest.fixture(scope='module')
@@ -124,9 +131,9 @@ def test_main_view_shows_bound_actuators_with_live_values(jog):
     assert wait(lambda: all(ext.panel.value_text(n) not in ('', '---') for n in NAMES), 5)
     assert ext.panel.value_text('Stage X').endswith('mm')
     assert ext.panel.step_text('Stage Y') == 'step 0.02'
-    assert ext.groups == [['Stage X', 'Stage Y'], ['Focus Z']]
+    assert [g.actuators for g in ext.groups] == [['Stage X', 'Stage Y'], ['Focus Z']]
     assert ext.panel.selected_names() == ['Stage X', 'Stage Y']
-    assert ext.panel.keys_text('Stage X') == '←/→' and ext.panel.keys_text('Stage Y') == '↓/↑'
+    assert ext.panel.keys_text('Stage X') == 'A/D' and ext.panel.keys_text('Stage Y') == 'S/W'
     assert ext.panel.keys_text('Focus Z') == 'PgDown/PgUp'
 
 
@@ -143,17 +150,17 @@ def test_works_out_of_the_box(modules, tmp_path, monkeypatch):
     win.show()
     try:
         activate(ext)
-        assert ext.groups == [[n] for n in NAMES]
+        assert [g.actuators for g in ext.groups] == [[n] for n in NAMES]
         assert ext.panel.selected_names() == ['Stage X']
-        assert ext.panel.keys_text('Stage X') == '←→ ↓↑'
+        assert ext.panel.keys_text('Stage X') == 'A/D S/W'
         ext.controller.steps = {n: 0.01 for n in NAMES}
-        tap(ext, Qt.Key_Right)
+        tap(ext, Qt.Key_D)
         idle(ext, spies)
-        tap(ext, Qt.Key_Up)
+        tap(ext, Qt.Key_W)
         idle(ext, spies)
         assert spies['Stage X'].moves == [pytest.approx(0.01), pytest.approx(0.01)]
         tap(ext, Qt.Key_2)
-        tap(ext, Qt.Key_Left)
+        tap(ext, Qt.Key_A)
         idle(ext, spies)
         assert spies['Stage Y'].moves == [pytest.approx(-0.01)]
         assert ext.panel.selected_names() == ['Stage Y']
@@ -180,7 +187,7 @@ def test_focus_indicator_green_red(jog):
 def test_no_motion_when_red(jog):
     ext, spies = jog
     other = deactivate(ext)
-    tap(ext, Qt.Key_Right)                               # even delivered to the panel, ignored
+    tap(ext, Qt.Key_D)                               # even delivered to the panel, ignored
     tap(ext, Qt.Key_PageUp)
     wait(timeout=0.3)
     assert all(not s.moves for s in spies.values())
@@ -191,16 +198,16 @@ def test_no_motion_when_red(jog):
 def test_step_mode_one_press_one_step(jog):
     ext, spies = jog
     x0 = ext.values['Stage X']
-    press(ext, Qt.Key_Right)
+    press(ext, Qt.Key_D)
     for _ in range(10):                                  # OS auto-repeat while held: ignored
-        release(ext, Qt.Key_Right, auto_repeat=True)
-        press(ext, Qt.Key_Right, auto_repeat=True)
+        release(ext, Qt.Key_D, auto_repeat=True)
+        press(ext, Qt.Key_D, auto_repeat=True)
     wait(timeout=0.5)
-    release(ext, Qt.Key_Right)
+    release(ext, Qt.Key_D)
     assert spies['Stage X'].moves == [pytest.approx(0.01)]
     idle(ext, spies)
     assert wait(lambda: abs(ext.values['Stage X'] - x0 - 0.01) < 1e-3, 5)
-    tap(ext, Qt.Key_Down)
+    tap(ext, Qt.Key_S)
     tap(ext, Qt.Key_PageUp)
     idle(ext, spies)
     assert spies['Stage Y'].moves == [pytest.approx(-0.02)]
@@ -211,16 +218,16 @@ def test_no_queue_with_slow_actuator(jog, modules):
     ext, spies = jog
     set_tau(modules[1], 1500)
     for _ in range(5):
-        tap(ext, Qt.Key_Up)                              # step mode: only the first press moves
+        tap(ext, Qt.Key_W)                              # step mode: only the first press moves
         wait(timeout=0.05)
     assert spies['Stage Y'].moves == [pytest.approx(0.02)]
     configure(ext, ext.setup.__class__(**{**ext.setup.__dict__, 'motion_mode': 'continuous'}))
     idle(ext, spies, 15)
     spies['Stage Y'].moves.clear()
-    press(ext, Qt.Key_Up)                                # continuous: next step only after move done
+    press(ext, Qt.Key_W)                                # continuous: next step only after move done
     wait(timeout=0.8)
     assert len(spies['Stage Y'].moves) == 1
-    release(ext, Qt.Key_Up)
+    release(ext, Qt.Key_W)
     idle(ext, spies, 15)
     assert len(spies['Stage Y'].moves) == 1
     assert all(spies['Stage Y'].idle_at_call)
@@ -235,9 +242,9 @@ def continuous(ext):
 def test_continuous_mode_stops_on_release(jog):
     ext, spies = jog
     continuous(ext)
-    press(ext, Qt.Key_Right)
+    press(ext, Qt.Key_D)
     assert wait(lambda: len(spies['Stage X'].moves) >= 3, 5)
-    release(ext, Qt.Key_Right)
+    release(ext, Qt.Key_D)
     n = len(spies['Stage X'].moves)
     wait(timeout=0.6)
     assert len(spies['Stage X'].moves) == n             # no step after the release
@@ -248,7 +255,7 @@ def test_continuous_mode_stops_on_release(jog):
 def test_focus_loss_during_held_key(jog):
     ext, spies = jog
     continuous(ext)
-    press(ext, Qt.Key_Left)
+    press(ext, Qt.Key_A)
     assert wait(lambda: len(spies['Stage X'].moves) >= 2, 5)
     other = deactivate(ext)
     n = len(spies['Stage X'].moves)
@@ -259,7 +266,7 @@ def test_focus_loss_during_held_key(jog):
     activate(ext)                                       # the key is not considered held anymore
     wait(timeout=0.5)
     assert len(spies['Stage X'].moves) == n
-    release(ext, Qt.Key_Left)
+    release(ext, Qt.Key_A)
     other.close()
 
 
@@ -267,17 +274,17 @@ def test_shift_and_ctrl_in_continuous_mode(jog):
     ext, spies = jog
     continuous(ext)
     press(ext, Qt.Key_Shift, Qt.ShiftModifier)
-    press(ext, Qt.Key_Right, Qt.ShiftModifier)
+    press(ext, Qt.Key_D, Qt.ShiftModifier)
     assert wait(lambda: len(spies['Stage X'].moves) >= 2, 5)
-    release(ext, Qt.Key_Right, Qt.ShiftModifier)
+    release(ext, Qt.Key_D, Qt.ShiftModifier)
     release(ext, Qt.Key_Shift)
     idle(ext, spies)
     assert all(d == pytest.approx(0.1) for d in spies['Stage X'].moves)
     spies['Stage X'].moves.clear()
     press(ext, Qt.Key_Control, Qt.ControlModifier)
-    press(ext, Qt.Key_Right, Qt.ControlModifier)
+    press(ext, Qt.Key_D, Qt.ControlModifier)
     assert wait(lambda: len(spies['Stage X'].moves) >= 2, 5)
-    release(ext, Qt.Key_Right, Qt.ControlModifier)
+    release(ext, Qt.Key_D, Qt.ControlModifier)
     release(ext, Qt.Key_Control)
     idle(ext, spies)
     assert all(d == pytest.approx(0.001) for d in spies['Stage X'].moves)
@@ -302,7 +309,7 @@ def test_plus_minus_change_the_steps_of_the_selection(jog):
     tap(ext, Qt.Key_Plus)
     assert ext.controller.step('Focus Z') == pytest.approx(0.05)
     tap(ext, Qt.Key_1)
-    tap(ext, Qt.Key_Right)
+    tap(ext, Qt.Key_D)
     idle(ext, spies)
     assert spies['Stage X'].moves == [pytest.approx(0.001)]
     ext.settings.child('general', 'step_factor').setValue(2.0)       # custom factor
@@ -315,9 +322,9 @@ def test_selection_by_number_and_click(jog):
     from qtpy.QtTest import QTest
     tap(ext, Qt.Key_2)                                   # Focus Z: the arrows move it now
     assert ext.panel.selected_names() == ['Focus Z']
-    assert ext.panel.keys_text('Focus Z') == '←→ ↓↑  PgDown/PgUp'
+    assert ext.panel.keys_text('Focus Z') == 'A/D S/W  PgDown/PgUp'
     assert ext.panel.keys_text('Stage X') == ''
-    tap(ext, Qt.Key_Left)
+    tap(ext, Qt.Key_A)
     idle(ext, spies)
     assert spies['Focus Z'].moves == [pytest.approx(-0.005)] and not spies['Stage X'].moves
     tap(ext, Qt.Key_7)                                   # no group 7: nothing changes
@@ -326,9 +333,50 @@ def test_selection_by_number_and_click(jog):
     QTest.mouseClick(ext.panel._rows['Stage Y'].name, Qt.LeftButton)   # a click selects the pair
     assert ext.panel.selected_names() == ['Stage X', 'Stage Y']
     assert ext.panel.armed
-    tap(ext, Qt.Key_Down)
+    tap(ext, Qt.Key_S)
     idle(ext, spies)
     assert spies['Stage Y'].moves == [pytest.approx(-0.02)]
+
+
+def test_pairs_from_the_main_view(jog):
+    ext, spies = jog
+    configure(ext, JogSetup(displayed=list(NAMES), steps={n: 0.01 for n in NAMES}))
+    assert [g.actuators for g in ext.groups] == [['Stage X'], ['Stage Y'], ['Focus Z']]
+    menu = ext.group_menu(0, 'Stage X')                  # right-click menu of a single actuator
+    sub = menu.actions()[0].menu()
+    assert [a.text() for a in sub.actions()] == ['Stage Y', 'Focus Z']
+    ext.pair_actuators('Stage X', 'Focus Z', name='Sample XZ')
+    assert [g.actuators for g in ext.groups] == [['Stage X', 'Focus Z'], ['Stage Y']]
+    assert ext.panel.header_text(0) == 'Sample XZ'
+    assert ext.panel.selected_names() == ['Stage X', 'Focus Z']
+    assert ext.panel.keys_text('Stage X') == 'A/D' and ext.panel.keys_text('Focus Z') == 'S/W'
+    tap(ext, Qt.Key_W)                                   # second actuator of the pair
+    idle(ext, spies)
+    assert spies['Focus Z'].moves == [pytest.approx(0.01)]
+    menu = ext.group_menu(0)                             # right-click menu of a pair
+    assert [a.text() for a in menu.actions()] == ["Rename 'Sample XZ'…", 'Unpair']
+    ext.rename_pair(0, 'Microscope')
+    assert ext.panel.header_text(0) == 'Microscope'
+    assert ext.settings['setup', 'current'].endswith('*')
+    ext.save_setup('pairs')
+    assert ext.store.load('pairs').pairs[0].name == 'Microscope'
+    ext.unpair(0)
+    assert [g.actuators for g in ext.groups] == [['Stage X'], ['Stage Y'], ['Focus Z']]
+
+
+def test_move_keys_setting(jog):
+    ext, spies = jog
+    ext.settings.child('general', 'move_keys').setValue('arrows')
+    tap(ext, Qt.Key_D)                                   # WASD off
+    wait(timeout=0.3)
+    assert not spies['Stage X'].moves
+    assert ext.panel.keys_text('Stage X') == '←/→'
+    tap(ext, Qt.Key_Right)
+    idle(ext, spies)
+    ext.settings.child('general', 'move_keys').setValue('both')
+    tap(ext, Qt.Key_D)
+    idle(ext, spies)
+    assert spies['Stage X'].moves == [pytest.approx(0.01)] * 2
 
 
 # ---------------------------------------------------------------------------------------------- settings and setups
@@ -390,7 +438,7 @@ def test_setup_with_missing_actuator(jog):
     assert ext.panel.row_names() == ['Stage X']
     assert 'warnings' in ext.panel.message_label.text()
     tap(ext, Qt.Key_PageUp)                              # the skipped binding does nothing
-    tap(ext, Qt.Key_Right)
+    tap(ext, Qt.Key_D)
     idle(ext, spies)
     assert spies['Stage X'].moves and not spies['Focus Z'].moves
 
