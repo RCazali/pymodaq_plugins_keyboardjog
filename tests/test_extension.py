@@ -1,4 +1,4 @@
-﻿"""The extension with real DAQ_Move modules (Mock actuators of pymodaq_plugins_mock, no hardware).
+"""The extension with real DAQ_Move modules (Mock actuators of pymodaq_plugins_mock, no hardware).
 
 Covers the checklist of the specification: focus green / red, no motion when red, step mode one press = one step,
 continuous mode stops on release, focus loss while a key is held, no move queueing with a slow actuator, +/- step
@@ -87,7 +87,7 @@ def jog(modules, tmp_path, monkeypatch):
     ext, win = new_extension(modules, tmp_path, monkeypatch)
     win.show()
     activate(ext)
-    configure(ext, JogSetup(displayed=list(NAMES), pair_numbers={'Stage X': 1, 'Stage Y': 1},
+    configure(ext, JogSetup(pair_numbers={'Stage X': 1, 'Stage Y': 1},
                             axes={'Stage Y': VERTICAL}, extra_keys=[ExtraKeys('Focus Z', 'PgDown', 'PgUp')],
                             steps={'Stage X': 0.01, 'Stage Y': 0.02, 'Focus Z': 0.005}))
     yield ext, spies
@@ -153,12 +153,11 @@ def test_main_view_shows_bound_actuators_with_live_values(jog):
     ext, spies = jog
     assert ext.panel.row_names() == list(NAMES)
     assert wait(lambda: all(ext.panel.value_text(n) not in ('', '---') for n in NAMES), 5)
-    assert ext.panel.value_text('Stage X').endswith('mm')
-    assert ext.panel.step_text('Stage Y') == 'step 0.02'
+    assert ext.panel._line_of['Stage X'].units.text() == 'mm'        # units once at the end of the line
     assert [(g.label, g.actuators) for g in ext.groups] == [('1', ['Stage X', 'Stage Y']), ('2', ['Focus Z'])]
     assert ext.panel.selected_names() == ['Stage X', 'Stage Y']
-    assert ext.panel.keys_text('Stage X') == 'A/D' and ext.panel.keys_text('Stage Y') == 'S/W'
-    assert ext.panel.keys_text('Focus Z') == 'PgDown/PgUp'
+    assert ext.panel.line_count() == 2                   # one line per group
+    assert ext.panel.detail_text() == 'A/D step 0.01 mm   S/W step 0.02 mm'
 
 
 def test_works_out_of_the_box(modules, tmp_path, monkeypatch):
@@ -171,7 +170,7 @@ def test_works_out_of_the_box(modules, tmp_path, monkeypatch):
         assert [(g.label, g.actuators) for g in ext.groups] == [('1', ['Stage X']), ('2', ['Stage Y']),
                                                                 ('3', ['Focus Z'])]
         assert ext.panel.selected_names() == ['Stage X']
-        assert ext.panel.keys_text('Stage X') == 'A/D'
+        assert ext.panel.detail_text() == 'A/D step 1 mm'
         assert not ext.panel.history_visible()                    # history hidden by default
         ext.controller.steps = {n: 0.01 for n in NAMES}
         tap(ext, Qt.Key_D)
@@ -271,7 +270,7 @@ def continuous(ext, names=NAMES):
 def test_continuous_mode_stops_on_release(jog):
     ext, spies = jog
     continuous(ext)
-    assert ext.panel.step_text('Stage X') == 'cont. 0.01'
+    assert ext.panel.detail_text() == 'A/D step 0.01 mm cont.   S/W step 0.02 mm cont.'
     press(ext, Qt.Key_D)
     assert wait(lambda: len(spies['Stage X'].moves) >= 3, 5)
     release(ext, Qt.Key_D)
@@ -285,7 +284,7 @@ def test_continuous_mode_stops_on_release(jog):
 def test_continuous_is_per_actuator(jog):
     ext, spies = jog
     continuous(ext, ['Stage Y'])
-    assert ext.panel.step_text('Stage X') == 'step 0.01' and ext.panel.step_text('Stage Y') == 'cont. 0.02'
+    assert ext.panel.detail_text() == 'A/D step 0.01 mm   S/W step 0.02 mm cont.'
     press(ext, Qt.Key_D)
     press(ext, Qt.Key_W)
     assert wait(lambda: len(spies['Stage Y'].moves) >= 3, 5)
@@ -334,7 +333,7 @@ def test_shift_and_ctrl_in_continuous_mode(jog):
     idle(ext, spies)
     assert all(d == pytest.approx(0.001) for d in spies['Stage X'].moves)
     assert ext.controller.step('Stage X') == pytest.approx(0.01)   # stored step unchanged
-    assert ext.panel.step_text('Stage X') == 'cont. 0.01'
+    assert ext.panel.detail_text().startswith('A/D step 0.01 mm cont.')
 
 
 # ---------------------------------------------------------------------------------------------- step size
@@ -344,7 +343,7 @@ def test_plus_minus_change_the_steps_of_the_selection(jog):
     assert ext.controller.step('Stage X') == pytest.approx(0.1)
     assert ext.controller.step('Stage Y') == pytest.approx(0.2)
     assert ext.controller.step('Focus Z') == pytest.approx(0.005)     # not selected: unchanged
-    assert ext.panel.step_text('Stage X') == 'step 0.1'
+    assert ext.panel.detail_text() == 'A/D step 0.1 mm   S/W step 0.2 mm'
     assert actuator_group(ext.settings, 'Stage X').child('step').value() == pytest.approx(0.1)
     tap(ext, Qt.Key_Minus)
     tap(ext, Qt.Key_Minus)
@@ -367,15 +366,14 @@ def test_selection_by_number_and_click(jog):
     from qtpy.QtTest import QTest
     tap(ext, Qt.Key_2)                                   # Focus Z: the movement keys move it now
     assert ext.panel.selected_names() == ['Focus Z']
-    assert ext.panel.keys_text('Focus Z') == 'A/D  PgDown/PgUp'
-    assert ext.panel.keys_text('Stage X') == ''
+    assert ext.panel.detail_text() == 'A/D PgDown/PgUp step 0.005 mm'
     tap(ext, Qt.Key_A)
     idle(ext, spies)
     assert spies['Focus Z'].moves == [pytest.approx(-0.005)] and not spies['Stage X'].moves
     tap(ext, Qt.Key_7)                                   # no group 7: nothing changes
     assert ext.panel.selected_names() == ['Focus Z']
     assert '7' in ext.panel.message_label.text()
-    QTest.mouseClick(ext.panel._rows['Stage Y'].name, Qt.LeftButton)   # a click selects the pair
+    QTest.mouseClick(ext.panel._line_of['Stage Y'].name, Qt.LeftButton)   # a click selects the pair
     assert ext.panel.selected_names() == ['Stage X', 'Stage Y']
     assert ext.panel.armed
     tap(ext, Qt.Key_S)
@@ -386,7 +384,7 @@ def test_selection_by_number_and_click(jog):
 def test_pair_number_and_keys_in_the_settings(jog):
     """The settings of each actuator: same pair number = one group, horizontal = A/D, vertical = S/W, 0 = number 10"""
     ext, spies = jog
-    configure(ext, JogSetup(displayed=list(NAMES), steps={n: 0.01 for n in NAMES}))
+    configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
     assert [(g.label, g.actuators) for g in ext.groups] == [('1', ['Stage X']), ('2', ['Stage Y']),
                                                             ('3', ['Focus Z'])]
     focus = actuator_group(ext.settings, 'Focus Z')
@@ -395,7 +393,7 @@ def test_pair_number_and_keys_in_the_settings(jog):
     assert [g.label for g in ext.groups] == ['1', '2', '0']
     tap(ext, Qt.Key_0)
     assert ext.panel.selected_names() == ['Focus Z']
-    assert ext.panel.keys_text('Focus Z') == 'S/W'
+    assert ext.panel.detail_text() == 'S/W step 0.01 mm'
     tap(ext, Qt.Key_D)                                   # vertical: A / D do nothing
     tap(ext, Qt.Key_W)
     idle(ext, spies)
@@ -413,38 +411,59 @@ def test_pair_number_and_keys_in_the_settings(jog):
 
 def test_right_click_menu(jog):
     ext, spies = jog
-    configure(ext, JogSetup(displayed=list(NAMES), steps={n: 0.01 for n in NAMES}))
-    menu = ext.group_menu(0, 'Stage X')                  # right-click menu of a single actuator
-    assert [a.text() for a in menu.actions()] == ["Pair 'Stage X' with", 'Pair number', 'Keys', 'Continuous']
+    configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
+    menu = ext.group_menu(0)                             # right-click menu of a single actuator
+    assert [a.text() for a in menu.actions()] == ["Pair 'Stage X' with", 'Pair number', 'Keys', 'Continuous',
+                                                  'Headless (no value shown)', 'Hide']
     assert [a.text() for a in menu.actions()[0].menu().actions()] == ['Stage Y', 'Focus Z']
     pair_number = menu.actions()[1].menu()
     assert [a.text() for a in pair_number.actions() if a.isChecked()] == ['auto']
     menu_action(menu, 'Continuous').trigger()
     assert ext.controller.continuous == {'Stage X'}
     assert actuator_group(ext.settings, 'Stage X').child('continuous').value() is True
-    menu = ext.group_menu(2, 'Focus Z')
-    menu_action(menu, 'Keys', 'vertical (S/W)').trigger()
+    menu_action(ext.group_menu(2), 'Keys', 'vertical (S/W)').trigger()
     assert ext.setup.axis('Focus Z') == VERTICAL
-    menu = ext.group_menu(2, 'Focus Z')
-    menu_action(menu, 'Pair number', '5').trigger()
+    menu_action(ext.group_menu(2), 'Pair number', '5').trigger()
     assert [g.label for g in ext.groups] == ['1', '2', '5']
+    menu_action(ext.group_menu(1), 'Hide').trigger()
+    assert [g.actuators for g in ext.groups] == [['Stage X'], ['Focus Z']]
+    assert actuator_group(ext.settings, 'Stage Y').child('pair').value() == 'hidden'
+    tap(ext, Qt.Key_2)                                   # Stage Y hidden: number 2 is free, nothing moves
+    assert '2' in ext.panel.message_label.text()
+
+
+def test_headless_actuator(jog, modules):
+    ext, spies = jog
+    set_tau(modules[0], 600)
+    menu_action(ext.group_menu(0), 'Stage X', 'Headless (no value shown)').trigger()   # pair: one submenu each
+    assert ext.setup.headless == ['Stage X']
+    assert ext.panel.value_text('Stage X') == '' and ext.panel.value_text('Stage Y') != ''
+    tap(ext, Qt.Key_D)
+    assert ext.panel.is_busy_shown('Stage X')            # its name turns orange while it moves
+    assert ext.panel._line_of['Stage X'].name.styleSheet() != ext.panel._line_of['Focus Z'].name.styleSheet()
+    idle(ext, spies)
+    assert wait(lambda: not ext.panel.is_busy_shown('Stage X'), 2)
+    assert ext.panel.value_text('Stage X') == ''         # still nothing shown after the move
+    ext.panel.show_history(True)                         # its moves are in the history
+    assert ext.history_plot.point_count() >= 2
 
 
 def test_pairs_from_the_main_view(jog):
     ext, spies = jog
-    configure(ext, JogSetup(displayed=list(NAMES), steps={n: 0.01 for n in NAMES}))
+    configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
     ext.pair_actuators('Stage X', 'Focus Z', name='Sample XZ')
     assert [(g.label, g.actuators) for g in ext.groups] == [('1', ['Stage X', 'Focus Z']), ('2', ['Stage Y'])]
     assert actuator_group(ext.settings, 'Focus Z').child('pair').value() == '1'
     assert actuator_group(ext.settings, 'Focus Z').child('axis').value() == VERTICAL
     assert ext.panel.header_text(0) == 'Sample XZ'
     assert ext.panel.selected_names() == ['Stage X', 'Focus Z']
-    assert ext.panel.keys_text('Stage X') == 'A/D' and ext.panel.keys_text('Focus Z') == 'S/W'
+    assert ext.panel.detail_text() == 'A/D step 0.01 mm   S/W step 0.01 mm'
     tap(ext, Qt.Key_W)                                   # vertical actuator of the pair
     idle(ext, spies)
     assert spies['Focus Z'].moves == [pytest.approx(0.01)]
-    menu = ext.group_menu(0)                             # right-click menu of a pair header
-    assert [a.text() for a in menu.actions() if not a.isSeparator()] == ["Rename 'Sample XZ'…", 'Unpair']
+    menu = ext.group_menu(0)                             # right-click menu of a pair: a submenu per actuator
+    assert [a.text() for a in menu.actions() if not a.isSeparator()] == ['Stage X', 'Focus Z',
+                                                                         "Rename 'Sample XZ'…", 'Unpair']
     ext.rename_pair(0, 'Microscope')
     assert ext.panel.header_text(0) == 'Microscope'
     assert ext.settings['setup', 'current'].endswith('*')
@@ -461,7 +480,7 @@ def test_move_keys_setting(jog):
     tap(ext, Qt.Key_D)                                   # WASD off
     wait(timeout=0.3)
     assert not spies['Stage X'].moves
-    assert ext.panel.keys_text('Stage X') == '←/→'
+    assert ext.panel.detail_text().startswith('←/→ step 0.01 mm')
     tap(ext, Qt.Key_Right)
     idle(ext, spies)
     ext.settings.child('general', 'move_keys').setValue('both')
@@ -516,7 +535,7 @@ def test_history_of_a_single_actuator_moved_from_elsewhere(jog, modules):
 # ---------------------------------------------------------------------------------------------- settings and setups
 def test_key_conflicts_are_shown_and_disabled(jog):
     ext, spies = jog
-    configure(ext, JogSetup(displayed=list(NAMES), extra_keys=[
+    configure(ext, JogSetup(extra_keys=[
         ExtraKeys('Focus Z', 'PgDown', 'PgUp'), ExtraKeys('Stage Y', 'Home', 'PgUp'),
         ExtraKeys('Stage X', 'Up', 'End')], steps={'Stage X': 0.01}))
     problems = ext.settings.child('problems')
@@ -566,11 +585,11 @@ def test_setup_save_load_delete(jog):
 
 def test_setup_with_missing_actuator(jog):
     ext, spies = jog
-    ext.store.save('old bench', JogSetup(displayed=['Ghost'], pair_numbers={'Stage X': 1, 'Ghost Y': 1},
-                                         axes={'Ghost Y': VERTICAL},
+    ext.store.save('old bench', JogSetup(hidden=['Stage Y', 'Focus Z', 'Ghost'],
+                                         pair_numbers={'Stage X': 1, 'Ghost Y': 1}, axes={'Ghost Y': VERTICAL},
                                          extra_keys=[ExtraKeys('Ghost Z', 'PgDown', 'PgUp')]))
     warnings = ext.load_setup('old bench')
-    assert len(warnings) == 3
+    assert len(warnings) == 2
     assert ext.panel.row_names() == ['Stage X']
     assert 'warnings' in ext.panel.message_label.text()
     tap(ext, Qt.Key_PageUp)                              # the skipped binding does nothing
@@ -617,9 +636,11 @@ def test_window_is_compact(jog):
     ext.panel.show_settings(False)
     wait(timeout=0.2)
     assert ext.mainwindow.height() < 250
-    ext.panel.show_history(True)
+    width = ext.mainwindow.width()
+    ext.panel.show_history(True)                         # on the right side: wider, not much higher
     wait(timeout=0.2)
-    assert ext.mainwindow.height() >= 350
+    assert ext.mainwindow.width() >= width + 220 and ext.mainwindow.height() < 320
+    assert ext.panel.history_container.x() > ext.panel.rows_widget.x() + ext.panel.rows_widget.width()
     ext.panel.show_history(False)
     wait(timeout=0.2)
-    assert ext.mainwindow.height() < 250
+    assert ext.mainwindow.height() < 250 and ext.mainwindow.width() == width

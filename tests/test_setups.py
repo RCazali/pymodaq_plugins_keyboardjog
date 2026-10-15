@@ -13,7 +13,7 @@ def _qt():
 
 
 def sample_setup():
-    return JogSetup(displayed=['Stage X', 'Rotation µ'], continuous=['Stage Y'],
+    return JogSetup(hidden=['Rotation µ'], headless=['Stage X'], continuous=['Stage Y'],
                     pair_numbers={'Stage X': 3, 'Stage Y': 3, 'Focus Z': 10},
                     axes={'Stage X': HORIZONTAL, 'Stage Y': VERTICAL, 'Focus Z': VERTICAL},
                     pair_names={3: 'Sample'}, extra_keys=[ExtraKeys('Focus Z', 'PgDown', 'PgUp')],
@@ -68,7 +68,7 @@ def test_tolerant_loading(tmp_path):
     ioxml.parameter_to_xml_file(p, tmp_path / 'odd', overwrite=True)
     setup = SetupStore(tmp_path).load('odd')
     assert setup.move_keys == 'wasd' and setup.step_factor == 10.0
-    assert setup.pair_numbers == {} and setup.axes == {} and setup.steps == {} and setup.displayed == []
+    assert setup.pair_numbers == {} and setup.axes == {} and setup.steps == {} and setup.hidden == []
 
 
 def test_version_1_setups_are_converted(tmp_path):
@@ -86,8 +86,11 @@ def test_version_1_setups_are_converted(tmp_path):
             {'name': 'motion_mode', 'type': 'str', 'value': 'continuous'},
             {'name': 'step_factor', 'type': 'float', 'value': 4.0}]},
         {'name': 'displayed', 'type': 'group', 'children': [{'name': 'a00', 'type': 'str', 'value': 'R'}]},
-        {'name': 'steps', 'type': 'group', 'children': [{'name': 's00', 'type': 'group', 'children': [
-            {'name': 'actuator', 'type': 'str', 'value': 'X'}, {'name': 'step', 'type': 'float', 'value': 0.2}]}]},
+        {'name': 'steps', 'type': 'group', 'children': [
+            {'name': 's00', 'type': 'group', 'children': [
+                {'name': 'actuator', 'type': 'str', 'value': 'X'}, {'name': 'step', 'type': 'float', 'value': 0.2}]},
+            {'name': 's01', 'type': 'group', 'children': [         # not displayed, not bound: hidden
+                {'name': 'actuator', 'type': 'str', 'value': 'T'}, {'name': 'step', 'type': 'float', 'value': 1.0}]}]},
         {'name': 'bindings', 'type': 'group', 'children': [
             {'name': 'b00', 'type': 'group', 'children': [
                 {'name': 'kind', 'type': 'str', 'value': 'pair'}, {'name': 'name', 'type': 'str', 'value': 'XY'},
@@ -98,8 +101,29 @@ def test_version_1_setups_are_converted(tmp_path):
                 {'name': 'axis0', 'type': 'group', 'children': axis('Z', 'PgDown', 'PgUp')}]}]}])
     ioxml.parameter_to_xml_file(p, tmp_path / 'v1', overwrite=True)
     setup = SetupStore(tmp_path).load('v1')
-    assert setup.displayed == ['R'] and setup.steps == {'X': 0.2} and setup.step_factor == 4.0
+    assert setup.hidden == ['T'] and setup.steps == {'X': 0.2, 'T': 1.0} and setup.step_factor == 4.0
     assert setup.pair_numbers == {'X': 1, 'Y': 1} and setup.axes == {'X': HORIZONTAL, 'Y': VERTICAL}
     assert setup.pair_names == {1: 'XY'}
     assert setup.extra_keys == [ExtraKeys('Z', 'PgDown', 'PgUp')]
-    assert set(setup.continuous) == {'R', 'X', 'Y', 'Z'}
+    assert set(setup.continuous) == {'R', 'X', 'Y', 'Z', 'T'}
+
+
+def test_version_2_display_flag_is_converted():
+    """Version 2: 'display' per actuator; a non-displayed actuator was shown anyway if paired or with extra keys"""
+    from pymodaq_gui.parameter import Parameter
+
+    def actuator(i, name, display, pair=0):
+        return {'name': f'a{i:02d}', 'type': 'group', 'children': [
+            {'name': 'actuator', 'type': 'str', 'value': name}, {'name': 'display', 'type': 'bool', 'value': display},
+            {'name': 'pair', 'type': 'int', 'value': pair}]}
+
+    p = Parameter.create(name='keyboard_jog_setup', type='group', children=[
+        {'name': 'version', 'type': 'int', 'value': 2},
+        {'name': 'actuators', 'type': 'group', 'children': [
+            actuator(0, 'A', True), actuator(1, 'B', False), actuator(2, 'C', False, pair=3),
+            actuator(3, 'D', False)]},
+        {'name': 'extra_keys', 'type': 'group', 'children': [{'name': 'x00', 'type': 'group', 'children': [
+            {'name': 'actuator', 'type': 'str', 'value': 'D'}, {'name': 'key_minus', 'type': 'str', 'value': 'Home'},
+            {'name': 'key_plus', 'type': 'str', 'value': 'End'}]}]}])
+    setup = setup_from_parameter(p)
+    assert setup.hidden == ['B'] and setup.pair_numbers == {'C': 3}

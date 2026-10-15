@@ -77,7 +77,7 @@ def test_movement_keys():
 
 
 def test_default_groups_one_per_actuator_numbered_in_order():
-    setup = JogSetup(displayed=['A', 'B', 'C'])
+    setup = JogSetup(hidden=['D'])
     groups, problems = build_groups(setup, ['A', 'B', 'C', 'D'])
     assert [g.actuators for g in groups] == [['A'], ['B'], ['C']] and not problems
     assert [g.number for g in groups] == [1, 2, 3]
@@ -85,7 +85,7 @@ def test_default_groups_one_per_actuator_numbered_in_order():
 
 
 def test_same_pair_number_makes_a_pair():
-    setup = JogSetup(displayed=['A', 'C'], pair_numbers={'D': 2, 'B': 2, 'E': 5},
+    setup = JogSetup(hidden=['F'], pair_numbers={'D': 2, 'B': 2, 'E': 5},
                      axes={'B': HORIZONTAL, 'D': VERTICAL, 'E': VERTICAL}, pair_names={2: 'Stage'})
     groups, problems = build_groups(setup, ['A', 'B', 'C', 'D', 'E', 'F'])
     # explicit numbers first take their number, the auto ones take the free numbers in the dashboard order
@@ -106,9 +106,15 @@ def test_pair_problems_and_default_name():
     assert len(problems) == 2 and all('both horizontal' in p for p in problems)
 
 
+def test_lines_in_columns_of_at_most_five():
+    from pymodaq_plugins_keyboardjog.ui.panel import grid_shape
+    assert [grid_shape(n) for n in (0, 1, 4, 5, 6, 7, 10, 11)] == [(0, 0), (1, 1), (1, 4), (1, 5), (2, 3), (2, 4),
+                                                                   (2, 5), (3, 4)]
+
+
 def test_zero_key_and_no_number_after_ten():
     names = [f'M{i}' for i in range(12)]
-    groups, _ = build_groups(JogSetup(displayed=names), names)
+    groups, _ = build_groups(JogSetup(), names)
     assert [g.label for g in groups] == ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '', '']
 
 
@@ -144,18 +150,24 @@ def test_extra_keys_keymap_and_conflicts():
     assert len(problems) == 5
 
 
-def test_shown_actuators_include_paired_and_key_bound_ones_in_dashboard_order():
-    setup = JogSetup(displayed=['C'], pair_numbers={'D': 4}, extra_keys=[ExtraKeys('A', 'PgDown', 'PgUp')])
+def test_shown_actuators_are_all_but_the_hidden_ones_in_dashboard_order():
+    setup = JogSetup(hidden=['B'])
     assert setup.shown_actuators(['A', 'B', 'C', 'D']) == ['A', 'C', 'D']
 
 
+def test_extra_keys_of_a_hidden_actuator_are_disabled():
+    setup = JogSetup(hidden=['Z'], extra_keys=[ExtraKeys('Z', 'PgDown', 'PgUp')])
+    keymap, problems = build_keymap(setup)
+    assert keymap == {} and any('hidden' in p for p in problems)
+
+
 def test_restricted_to_skips_missing_actuators():
-    setup = JogSetup(displayed=['A', 'Gone'], pair_numbers={'A': 1, 'Gone': 1}, axes={'Gone': VERTICAL},
-                     continuous=['A', 'Gone'], extra_keys=[ExtraKeys('Gone2', 'A', 'B')],
+    setup = JogSetup(hidden=['B', 'Gone3'], headless=['A', 'Gone'], pair_numbers={'A': 1, 'Gone': 1},
+                     axes={'Gone': VERTICAL}, continuous=['A', 'Gone'], extra_keys=[ExtraKeys('Gone2', 'A', 'B')],
                      steps={'A': 0.1, 'Gone': 2.0}, pair_names={1: 'XY'})
     restricted, warnings = setup.restricted_to(['A', 'B'])
-    assert restricted.displayed == ['A'] and restricted.continuous == ['A']
+    assert restricted.hidden == ['B'] and restricted.headless == ['A'] and restricted.continuous == ['A']
     assert restricted.pair_numbers == {'A': 1} and restricted.axes == {}
     assert restricted.extra_keys == [] and restricted.steps == {'A': 0.1}
-    assert len(warnings) == 3
-    assert setup.displayed == ['A', 'Gone']               # the original is untouched
+    assert len(warnings) == 2                             # pair of 'Gone', extra keys of 'Gone2'
+    assert setup.hidden == ['B', 'Gone3']                 # the original is untouched

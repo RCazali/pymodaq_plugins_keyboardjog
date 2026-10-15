@@ -11,12 +11,15 @@ from typing import Callable, Dict, List, Optional, Sequence
 from pymodaq_gui.parameter import Parameter
 
 from ..core.keys import MOVE_KEY_SETS, WASD, normalize_key_name
-from ..core.model import AUTO, AXES, PAIR_CHOICES, ExtraKeys, JogSetup, number_label, number_of
+from ..core.model import AUTO, AXES, HIDDEN, PAIR_CHOICES, ExtraKeys, JogSetup, number_label, number_of
 
 KEY_TIP = ("Key name, e.g. PgUp, PgDown, Home, End, Ins, Del, F2... (no modifiers; the digits, the movement keys, "
            "'+', '-', '=', Shift, Ctrl and Tab are reserved)")
 PAIR_TIP = ("Number key (1..9, 0) selecting this actuator. Two actuators with the same number form a pair, moved "
-            "together: one horizontal, one vertical. auto: a number of its own, the first free one")
+            "together: one horizontal, one vertical. auto: a number of its own, the first free one. hidden: not in "
+            "the window")
+HEADLESS_TIP = ('Its value is not shown (e.g. a picomotor without encoder): its moves are only seen in the history; '
+                'its name turns orange while it moves')
 AXIS_TIP = ('horizontal: moved by the left / right keys (A / D or Q / D, arrows). '
             'vertical: moved by the down / up keys (S / W or S / Z, arrows)')
 CONTINUOUS_TIP = ('off: one key press = one step. on: steps repeated while the key is held, each one once the '
@@ -41,7 +44,7 @@ def settings_params() -> list:
         ]},
         {'title': 'Problems:', 'name': 'problems', 'type': 'text', 'value': '', 'readonly': True, 'visible': False},
         {'title': 'Actuators', 'name': 'actuators', 'type': 'group', 'children': [],
-         'tip': 'Display, motion mode, step, pair number and keys of each actuator of the Dashboard'},
+         'tip': 'Pair number, keys, step, motion mode and display of each actuator of the Dashboard'},
         {'title': 'Motion', 'name': 'general', 'type': 'group', 'children': [
             {'title': 'Move keys:', 'name': 'move_keys', 'type': 'list', 'limits': list(MOVE_KEY_SETS),
              'value': WASD, 'tip': 'Keys moving the selection. wasd: the W A S D keys by their position on the '
@@ -72,17 +75,18 @@ def fill_actuators(settings: Parameter, names: Sequence[str], units: Dict[str, s
     group.clearChildren()
     for i, name in enumerate(names):
         number = setup.number(name)
+        pair = HIDDEN if name in setup.hidden else number_label(number) if number else AUTO
         group.addChild({'title': name, 'name': f'act{i:02d}', 'type': 'group', 'expanded': False, 'children': [
-            {'title': 'Display:', 'name': 'display', 'type': 'bool', 'value': name in setup.displayed,
-             'tip': 'Shown in the main view (a paired actuator or one with extra keys is always shown)'},
-            {'title': 'Continuous:', 'name': 'continuous', 'type': 'bool', 'value': setup.is_continuous(name),
-             'tip': CONTINUOUS_TIP},
-            {'title': 'Step:', 'name': 'step', 'type': 'float', 'value': setup.step(name), 'min': 1e-12,
-             'suffix': units.get(name, ''), 'decimals': 6},
-            {'title': 'Pair:', 'name': 'pair', 'type': 'list', 'limits': list(PAIR_CHOICES),
-             'value': number_label(number) if number else AUTO, 'tip': PAIR_TIP},
+            {'title': 'Pair:', 'name': 'pair', 'type': 'list', 'limits': list(PAIR_CHOICES), 'value': pair,
+             'tip': PAIR_TIP},
             {'title': 'Keys:', 'name': 'axis', 'type': 'list', 'limits': list(AXES), 'value': setup.axis(name),
              'tip': AXIS_TIP},
+            {'title': 'Step:', 'name': 'step', 'type': 'float', 'value': setup.step(name), 'min': 1e-12,
+             'suffix': units.get(name, ''), 'decimals': 6},
+            {'title': 'Continuous:', 'name': 'continuous', 'type': 'bool', 'value': setup.is_continuous(name),
+             'tip': CONTINUOUS_TIP},
+            {'title': 'Headless:', 'name': 'headless', 'type': 'bool', 'value': setup.is_headless(name),
+             'tip': HEADLESS_TIP},
         ]})
 
 
@@ -157,14 +161,17 @@ def read_setup(settings: Parameter) -> JogSetup:
     setup = JogSetup(**{name: general.child(name).value() for name in GENERAL_NAMES})
     for group in settings.child('actuators').children():
         name = group.title()
-        if group.child('display').value():
-            setup.displayed.append(name)
         if group.child('continuous').value():
             setup.continuous.append(name)
+        if group.child('headless').value():
+            setup.headless.append(name)
         setup.steps[name] = float(group.child('step').value())
-        number = number_of(group.child('pair').value())
+        pair = group.child('pair').value()
+        number = number_of(pair)
         if number is not None:
             setup.pair_numbers[name] = number
+        elif pair == HIDDEN:
+            setup.hidden.append(name)
         setup.axes[name] = group.child('axis').value()
     for group in extra_groups(settings):
         setup.extra_keys.append(ExtraKeys(group.child('actuator').value() or '',

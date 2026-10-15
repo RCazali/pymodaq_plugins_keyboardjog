@@ -2,8 +2,9 @@
 
 One file per setup in ``<PyMoDAQ local folder>/KeyboardJog/setups`` (configurable in config_keyboardjog.toml). The
 name of the last used setup is kept in ``last_setup.txt`` of the same folder. Reading is tolerant: a missing or
-malformed entry takes its default value, so that old or hand-edited files still load. The setups of version 1
-(pairs as bindings, one motion mode for all) are converted.
+malformed entry takes its default value, so that old or hand-edited files still load. The older setups are
+converted: version 1 (pairs as bindings, one motion mode for all) and versions 1-2 (a *display* flag instead of the
+*hidden* pair choice).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from .model import AXES, GROUP_NUMBERS, HORIZONTAL, VERTICAL, ExtraKeys, JogSetu
 
 logger = set_logger(get_module_name(__file__))
 
-SETUP_VERSION = 2
+SETUP_VERSION = 3
 LAST_SETUP_FILE = 'last_setup.txt'
 EXTENSION_FOLDER = 'KeyboardJog'  # same name as CustomApp.get_local_folder() of PyMoDAQ >= 5.3
 
@@ -49,7 +50,8 @@ def setup_to_parameter(setup: JogSetup) -> Parameter:
     for i, name in enumerate(setup.used_actuators()):
         actuators.append({'name': f'a{i:02d}', 'type': 'group', 'children': [
             {'name': 'actuator', 'type': 'str', 'value': name},
-            {'name': 'display', 'type': 'bool', 'value': name in setup.displayed},
+            {'name': 'hidden', 'type': 'bool', 'value': name in setup.hidden},
+            {'name': 'headless', 'type': 'bool', 'value': setup.is_headless(name)},
             {'name': 'continuous', 'type': 'bool', 'value': setup.is_continuous(name)},
             {'name': 'step', 'type': 'float', 'value': float(setup.steps.get(name, 0.0))},   # 0: default
             {'name': 'pair', 'type': 'int', 'value': setup.number(name) or 0},              # 0: auto
@@ -111,12 +113,17 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
     if _child(param, 'actuators') is None and _child(param, 'bindings') is not None:
         _read_version_1(param, setup)
         return setup
+    not_displayed = []                       # versions 1-2
     for group in _children(param, 'actuators'):
         name = _value(group, 'actuator', '')
         if not name:
             continue
-        if _value(group, 'display', False):
-            setup.displayed.append(name)
+        if _value(group, 'hidden', False):
+            setup.hidden.append(name)
+        if _child(group, 'display') is not None and not _value(group, 'display', True):
+            not_displayed.append(name)
+        if _value(group, 'headless', False):
+            setup.headless.append(name)
         if _value(group, 'continuous', False):
             setup.continuous.append(name)
         step = _value(group, 'step', 0.0)
@@ -136,12 +143,19 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
     for group in _children(param, 'extra_keys'):
         setup.extra_keys.append(ExtraKeys(_value(group, 'actuator', ''), _value(group, 'key_minus', ''),
                                           _value(group, 'key_plus', '')))
+    _hide_not_displayed(setup, not_displayed)
     return setup
+
+
+def _hide_not_displayed(setup: JogSetup, not_displayed: List[str]):
+    """Versions 1-2: an actuator not displayed was hidden, unless it was paired or had extra keys"""
+    shown_anyway = set(setup.pair_numbers) | set(setup.key_bound_actuators())
+    setup.hidden += [a for a in not_displayed if a not in shown_anyway and a not in setup.hidden]
 
 
 def _read_version_1(param: Parameter, setup: JogSetup):
     """Setups of version 1: displayed list, steps list, bindings (pairs and single extra keys), one motion mode"""
-    setup.displayed = [str(c.value()) for c in _children(param, 'displayed') if c.value()]
+    displayed = [str(c.value()) for c in _children(param, 'displayed') if c.value()]
     for group in _children(param, 'steps'):
         name = _value(group, 'actuator', '')
         step = _value(group, 'step', 0.0)
@@ -167,7 +181,9 @@ def _read_version_1(param: Parameter, setup: JogSetup):
         else:
             logger.warning(f'malformed binding {group.name()} ignored')
     if _value(_child(param, 'general'), 'motion_mode', 'step') == 'continuous':
-        setup.continuous = [a for a in setup.used_actuators()]
+        setup.continuous = list(dict.fromkeys(setup.used_actuators() + displayed))
+    # the steps list held every actuator of the dashboard: the ones not displayed were hidden
+    _hide_not_displayed(setup, [a for a in setup.steps if a not in displayed])
 
 
 # ---------------------------------------------------------------------------------------------- store

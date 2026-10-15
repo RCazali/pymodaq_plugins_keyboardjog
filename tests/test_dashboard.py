@@ -1,4 +1,4 @@
-﻿"""The real PyMoDAQ Dashboard discovers and loads the extension through the ``pymodaq.extensions`` entry point.
+"""The real PyMoDAQ Dashboard discovers and loads the extension through the ``pymodaq.extensions`` entry point.
 
 * PyMoDAQ 5.1: preset file + ``DashBoard.load_extension_from_name('Keyboard Jog')``
 * PyMoDAQ >= 5.2: experiment file + ``load_dashboard_with_experiment(..., 'KEYBOARDJOG')``

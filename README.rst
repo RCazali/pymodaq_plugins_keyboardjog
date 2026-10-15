@@ -37,11 +37,14 @@ Extensions
   * **Movement keys**: W A S D are recognized by their position on the keyboard (Windows, Linux), so they are the
     Z Q S D keys of an AZERTY keyboard (the labels follow the input language). The arrows can be used instead, or
     both (setting *Move keys*).
-  * **Main view**: one compact row per displayed actuator: number, name, live position with units, step size, keys.
-    The selection is marked with ▶ and its keys are shown.
-  * **Settings of each actuator** (*Settings > Actuators*, or right-click its row): *Display*, *Continuous*,
-    *Step*, *Pair* (``auto``, 1..9, 0) and *Keys* (``horizontal``: A / D, ``vertical``: S / W; horizontal by
-    default). An actuator on ``auto`` takes the first free number.
+  * **Main view**: one line per group (number, name, horizontal value, vertical value, units), in columns of at
+    most 5 lines (10 groups: 5 + 5, 6 groups: 3 + 3). The values are aligned (fixed-width font, fixed decimals
+    given by the step). The selection is marked with ▶; its keys, steps and mode are in the detail line below.
+  * **Settings of each actuator** (*Settings > Actuators*, or right-click its line): *Pair* (``hidden``, ``auto``,
+    1..9, 0), *Keys* (``horizontal``: A / D, ``vertical``: S / W; horizontal by default), *Step*, *Continuous* and
+    *Headless*. An actuator on ``auto`` takes the first free number, a ``hidden`` one is not in the window (its
+    extra keys are disabled). A **headless** actuator shows no value (e.g. a picomotor without encoder): its name
+    turns orange while it moves and its moves are seen in the history only.
   * **Pairs**: two actuators with the same pair number form one group, selected by that number and moved together:
     the horizontal one with A / D, the vertical one with S / W (e.g. the X and Y of a stage). Quicker: right-click
     a row, *Pair 'X' with ▸ Y* (X horizontal, Y vertical). Right-click a pair to rename or unpair it.
@@ -50,10 +53,11 @@ Extensions
   * **Step size** per actuator, in its units. ``+`` multiplies the step of the selection by the step factor (10 by
     default), ``-`` divides it.
   * **Step mode** (default): one key press = one relative move of one step. Holding the key does nothing more.
-  * **Continuous mode** (per actuator, shown as ``cont.`` in the main view): steps are repeated while the key is
+  * **Continuous mode** (per actuator, ``cont.`` in the detail line): steps are repeated while the key is
     held, each one sent only once the previous move is done (moves are never queued), with an optional minimum
     interval. While held, **Shift** = step x10, **Ctrl** = step /10 (the stored step is unchanged).
-  * **History** (graph button, hidden by default): the end-of-move positions of the selected group, whatever moved
+  * **History** (graph button, hidden by default, on the right side): the end-of-move positions of the selected
+    group, whatever moved
     it, in 2D for a pair (old points grey, recent ones yellow, live position as a cross). Hover a point for its
     values and time, click it to go back there (after confirmation, ``move_abs``). Kept in
     ``<PyMoDAQ local folder>/KeyboardJog/history.json`` (2000 points per group). The value of an actuator is
@@ -65,7 +69,8 @@ Extensions
     always-on-top, history shown) is saved / loaded / deleted by name from the settings, as XML files (PyMoDAQ
     parameter-tree format) in ``<PyMoDAQ local folder>/KeyboardJog/setups``. The last setup is reloaded at startup.
     A setup referring to an actuator that is not in the Dashboard loads anyway: that actuator is skipped and a
-    warning is shown. The setups of version 0.1 (pairs and one motion mode for all) are converted when loaded.
+    warning is shown. Older setups (pairs as bindings, one motion mode for all, *Display* flag) are converted when
+    loaded.
 
 All the motion goes through the ``DAQ_Move`` modules already loaded in the Dashboard, with their public API only
 (``move_rel``, ``move_abs`` for the history, ``stop_motion``, ``current_value_signal``, ``move_done_signal``): no
@@ -92,6 +97,12 @@ Development launch with the mock actuators of ``pymodaq_plugins_mock``::
 
     python -m pymodaq_plugins_keyboardjog.tools.mock_config            # writes the 'keyboard_jog_mock' preset / experiment
     python -m pymodaq_plugins_keyboardjog.extensions.keyboard_jog keyboard_jog_mock
+
+Laser lab layout: 16 mock actuators in 10 groups (6 pairs, 3 of them headless picomotors, and 4 single
+actuators), with its setup ``lab`` loaded at startup::
+
+    python -m pymodaq_plugins_keyboardjog.tools.mock_config --lab
+    python -m pymodaq_plugins_keyboardjog.extensions.keyboard_jog keyboard_jog_lab
 
 
 Installation instructions

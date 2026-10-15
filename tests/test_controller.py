@@ -1,4 +1,4 @@
-﻿"""Motion controller rules with fake actuators and a fake clock."""
+"""Motion controller rules with fake actuators and a fake clock."""
 import pytest
 
 from helpers import FakeClock, FakePort, app

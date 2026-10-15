@@ -68,7 +68,7 @@ class HistoryPlot(QtWidgets.QWidget):
 
         self.plot = pg.PlotWidget(background=HIST_BG)
         self.plot.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.plot.setMinimumHeight(160)
+        self.plot.setMinimumHeight(140)
         item = self.plot.getPlotItem()
         item.hideButtons()
         item.showGrid(x=True, y=True, alpha=0.2)

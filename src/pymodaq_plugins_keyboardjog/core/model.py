@@ -2,13 +2,14 @@
 
 Keyboard model:
 
-* every actuator has a few settings of its own: displayed or not, step or continuous motion, step size, **pair
-  number** (``auto``, 1..9, 0) and **keys** (horizontal or vertical);
+* every actuator has a few settings of its own: **pair** (``hidden``, ``auto``, 1..9, 0), **keys** (horizontal or
+  vertical), step size, step or continuous motion, and **headless** (its value is not shown: e.g. a picomotor, whose
+  moves are only seen in the history);
 * the actuators sharing a pair number form one numbered **group** (a pair: e.g. the X and Y of a stage). An actuator
-  left on ``auto`` is a group of its own and takes the first free number. The number key (1..9, 0) or a click
-  selects a group; the movement keys (W A S D and / or the arrows) move it: left / right the *horizontal* actuator,
-  down / up the *vertical* one; ``+`` / ``-`` scale its steps;
-* **extra keys** bind an actuator to two keys of the user's choice, active whatever the selection.
+  left on ``auto`` is a group of its own and takes the first free number; a ``hidden`` one is not in the window at
+  all. The number key (1..9, 0) or a click selects a group; the movement keys (W A S D and / or the arrows) move it:
+  left / right the *horizontal* actuator, down / up the *vertical* one; ``+`` / ``-`` scale its steps;
+* **extra keys** bind a (not hidden) actuator to two keys of the user's choice, active whatever the selection.
 
 A setup holds all of this plus the general options; it is saved / loaded by name.
 """
@@ -25,8 +26,9 @@ VERTICAL = 'vertical'
 AXES = (HORIZONTAL, VERTICAL)
 
 AUTO = 'auto'
+HIDDEN = 'hidden'
 GROUP_NUMBERS = tuple(range(1, 11))       # 10 is the '0' key
-PAIR_CHOICES = (AUTO,) + tuple(str(n % 10) for n in GROUP_NUMBERS)
+PAIR_CHOICES = (HIDDEN, AUTO) + tuple(str(n % 10) for n in GROUP_NUMBERS)
 
 DEFAULT_STEP = 1.0
 
@@ -60,7 +62,8 @@ class ExtraKeys:
 @dataclass
 class JogSetup:
     """The complete configuration of the extension, saved / loaded as a named setup"""
-    displayed: List[str] = field(default_factory=list)
+    hidden: List[str] = field(default_factory=list)              # actuators not in the window
+    headless: List[str] = field(default_factory=list)            # actuators whose value is not shown
     steps: Dict[str, float] = field(default_factory=dict)
     continuous: List[str] = field(default_factory=list)          # actuators in continuous mode
     pair_numbers: Dict[str, int] = field(default_factory=dict)   # actuator -> 1..10 (absent: auto)
@@ -89,6 +92,9 @@ class JogSetup:
     def is_continuous(self, actuator: str) -> bool:
         return actuator in self.continuous
 
+    def is_headless(self, actuator: str) -> bool:
+        return actuator in self.headless
+
     def key_bound_actuators(self) -> List[str]:
         out = []
         for extra in self.extra_keys:
@@ -97,15 +103,13 @@ class JogSetup:
         return out
 
     def shown_actuators(self, order: Iterable[str]) -> List[str]:
-        """Actuators of the main view, in the dashboard order: the displayed ones, every paired one and every one
-        with extra keys"""
-        wanted = set(self.displayed) | {a for a in self.pair_numbers if self.number(a)} | set(self.key_bound_actuators())
-        return [name for name in order if name in wanted]
+        """Actuators of the main view, in the dashboard order: all but the hidden ones"""
+        return [name for name in order if name not in self.hidden]
 
     def used_actuators(self) -> List[str]:
         """Every actuator this setup refers to"""
         out = []
-        for name in (list(self.displayed) + list(self.pair_numbers) + self.key_bound_actuators()
+        for name in (list(self.hidden) + list(self.pair_numbers) + self.key_bound_actuators() + list(self.headless)
                      + list(self.continuous) + list(self.axes) + list(self.steps)):
             if name not in out:
                 out.append(name)
@@ -115,9 +119,6 @@ class JogSetup:
         """Copy keeping only the actuators present in the dashboard, with a message for each skipped item"""
         present = set(present)
         warnings = []
-        missing_displayed = [a for a in self.displayed if a not in present]
-        if missing_displayed:
-            warnings.append(f"not in the dashboard, not displayed: {', '.join(missing_displayed)}")
         for name, number in self.pair_numbers.items():
             if name not in present:
                 warnings.append(f"pair {number_label(number)}: '{name}' skipped, not in the dashboard")
@@ -129,7 +130,8 @@ class JogSetup:
                 extra_keys.append(ExtraKeys(extra.actuator, extra.key_minus, extra.key_plus))
         keep = lambda d: {k: v for k, v in d.items() if k in present}  # noqa: E731
         setup = JogSetup(**{**self.__dict__,
-                            'displayed': [a for a in self.displayed if a in present],
+                            'hidden': [a for a in self.hidden if a in present],
+                            'headless': [a for a in self.headless if a in present],
                             'steps': keep(self.steps),
                             'continuous': [a for a in self.continuous if a in present],
                             'pair_numbers': keep(self.pair_numbers),
@@ -227,13 +229,16 @@ def build_keymap(setup: JogSetup, reserved: Iterable[int] = ()) -> Tuple[Dict[in
 
     A key used twice is a conflict: it is reported and disabled for both, so that a key never moves an actuator
     the user did not expect. The arrows, digits, +, -, modifiers, Tab and the given keys (the movement keys) are
-    reserved.
+    reserved. The extra keys of a hidden actuator are disabled: nothing moves that is not in the window.
     """
     reserved = RESERVED_KEYS | frozenset(reserved)
     problems: List[str] = []
     claims: Dict[int, List[MoveAction]] = {}
     for extra in setup.extra_keys:
         if not extra.actuator:
+            continue
+        if extra.actuator in setup.hidden:
+            problems.append(f"extra keys of '{extra.actuator}' disabled: it is hidden")
             continue
         for text, direction in ((extra.key_minus, -1), (extra.key_plus, +1)):
             if not (text or '').strip():
