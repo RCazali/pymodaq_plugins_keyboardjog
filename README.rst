@@ -5,8 +5,8 @@ pymodaq_plugins_keyboardjog
    :target: https://pypi.org/project/pymodaq_plugins_keyboardjog/
    :alt: Latest Version
 
-.. image:: https://github.com/PyMoDAQ/pymodaq_plugins_keyboardjog/actions/workflows/tests.yml/badge.svg
-    :target: https://github.com/PyMoDAQ/pymodaq_plugins_keyboardjog/actions/workflows/tests.yml
+.. image:: https://github.com/RCazali/pymodaq_plugins_keyboardjog/actions/workflows/tests.yml/badge.svg
+    :target: https://github.com/RCazali/pymodaq_plugins_keyboardjog/actions/workflows/tests.yml
 
 **Keyboard Jog** is a PyMoDAQ Dashboard extension: a tiny, always-on-top window to move the actuators of the
 Dashboard with the keyboard (arrow keys for a pair of axes, keys of your choice for single actuators), while
