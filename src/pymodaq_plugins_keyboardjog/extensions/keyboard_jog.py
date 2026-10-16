@@ -94,7 +94,7 @@ class KeyboardJog(CustomExt):
         self._loading = True
         self._closing = False
         super().__init__(parent, dashboard)
-        folder = default_folder(plugin_config)
+        folder = self._storage_folder()
         self.store = SetupStore(folder)
         self.history = MoveHistory(folder.parent / HISTORY_FILE)
         self.positions = PositionStore(folder.parent / POSITIONS_FILE)
@@ -103,6 +103,7 @@ class KeyboardJog(CustomExt):
         self.controller = MotionController(parent=self)
         self.controller.connect_source(self.keyboard)
         self.ports: Dict[str, ActuatorPort] = {}
+        self._sources_key = None                # what the ports were built from (see _sources_signature)
         self.values: Dict[str, Optional[float]] = {}
         self.setup = JogSetup()
         self.setup_name = ''
@@ -240,15 +241,31 @@ class KeyboardJog(CustomExt):
                     logger.debug(f'modules manager not updated: {e}')
         self.refresh_actuators()
 
+    # hooks for an application embedding Keyboard Jog with its own access to the actuators (e.g. Laser Control)
+    def _storage_folder(self):
+        """Folder of the setups (the history and the saved positions are in its parent folder)"""
+        return default_folder(plugin_config)
+
+    def _port_sources(self) -> list:
+        """What the ports are built from: the DAQ_Move modules of the Dashboard"""
+        return actuator_modules(self.modules_manager)
+
+    def _sources_signature(self, sources: list):
+        return [id(m) for m in sources]
+
+    def _build_ports(self, sources: list) -> Dict[str, ActuatorPort]:
+        return make_ports(sources)
+
     def refresh_actuators(self, force: bool = False):
-        modules = actuator_modules(self.modules_manager)
-        current = [getattr(p, 'module', None) for p in self.ports.values()]
-        if not force and [id(m) for m in modules] == [id(m) for m in current]:
+        sources = self._port_sources()
+        key = self._sources_signature(sources)
+        if not force and key == self._sources_key:
             return
+        self._sources_key = key
         setup = self._read_setup() if not force else self.setup
         for port in self.ports.values():
             port.disconnect()
-        self.ports = make_ports(modules)
+        self.ports = self._build_ports(sources)
         self.values = {name: self.values.get(name) for name in self.ports}
         for name, port in self.ports.items():
             port.on_value = lambda value, n=name: self._on_value(n, value)
@@ -989,8 +1006,15 @@ class KeyboardJog(CustomExt):
         if history:          # the hint counts the minimum width of the history only
             width += max(0, HISTORY_WIDTH - self.panel.history_container.minimumWidth())
         height = max(hint.height(), HISTORY_MIN_HEIGHT if history else 60)
+        if self.panel.hasHeightForWidth() and not self.panel.settings_visible() and not history:
+            # a wrapped message is taller than the minimum size counts (not with the settings or the history: they
+            # fill the window)
+            panel_width = self.panel.width() + width - win.width()
+            height = max(height, hint.height() + self.panel.heightForWidth(panel_width)
+                         - self.panel.minimumSizeHint().height())
         if self.panel.settings_visible():
-            win.resize(max(win.width(), width, SETTINGS_SIZE.width()), max(win.height(), SETTINGS_SIZE.height()))
+            win.resize(max(win.width(), width, SETTINGS_SIZE.width()),
+                       max(win.height(), SETTINGS_SIZE.height(), height + 120))
         else:
             win.resize(width, height)
 

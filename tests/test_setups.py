@@ -3,8 +3,8 @@ import pytest
 
 from helpers import app
 from pymodaq_plugins_keyboardjog.core.model import HORIZONTAL, VERTICAL, ExtraKeys, JogSetup
-from pymodaq_plugins_keyboardjog.core.setups import (SetupStore, clean_name, setup_from_parameter,
-                                                     setup_to_parameter)
+from pymodaq_plugins_keyboardjog.core.setups import (SetupStore, clean_name, setup_from_dict, setup_from_parameter,
+                                                     setup_to_dict, setup_to_parameter)
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +25,18 @@ def sample_setup():
 def test_parameter_round_trip():
     setup = sample_setup()
     assert setup_from_parameter(setup_to_parameter(setup)) == setup
+
+
+def test_dict_round_trip():
+    """Setup stored by an embedding application (Laser Control preset): JSON round trip, tolerant reading"""
+    import json
+    setup = sample_setup()
+    assert setup_from_dict(json.loads(json.dumps(setup_to_dict(setup)))) == setup
+    assert setup_from_dict({}) == JogSetup()
+    broken = setup_from_dict({'general': {'step_factor': 'x', 'move_keys': 'nope'}, 'steps': {'A': 'bad', 'B': -1},
+                              'pair_numbers': {'A': 42, 'B': 2}, 'axes': {'A': 'diagonal'}, 'extra_keys': ['x']})
+    assert broken.step_factor == 10.0 and broken.move_keys == JogSetup().move_keys
+    assert broken.steps == {} and broken.pair_numbers == {'B': 2} and broken.axes == {} and broken.extra_keys == []
 
 
 def test_store_save_load_delete(tmp_path):

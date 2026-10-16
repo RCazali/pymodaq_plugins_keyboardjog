@@ -186,6 +186,73 @@ def _read_version_1(param: Parameter, setup: JogSetup):
     _hide_not_displayed(setup, [a for a in setup.steps if a not in displayed])
 
 
+# ---------------------------------------------------------------------------------------------- setup <-> dict
+def setup_to_dict(setup: JogSetup) -> dict:
+    """JSON-compatible copy of a setup, for an application storing it in its own files (e.g. Laser Control presets)"""
+    return {'version': SETUP_VERSION,
+            'general': {name: getattr(setup, name) for name, _ in _GENERAL},
+            'hidden': list(setup.hidden), 'headless': list(setup.headless), 'continuous': list(setup.continuous),
+            'steps': {k: float(v) for k, v in setup.steps.items()},
+            'pair_numbers': {k: int(v) for k, v in setup.pair_numbers.items()},
+            'axes': dict(setup.axes),
+            'pair_names': {str(k): v for k, v in setup.pair_names.items() if v},
+            'extra_keys': [{'actuator': e.actuator, 'key_minus': e.key_minus, 'key_plus': e.key_plus}
+                           for e in setup.extra_keys]}
+
+
+def setup_from_dict(data: dict) -> JogSetup:
+    """Setup from setup_to_dict; tolerant like the XML reading: a missing or malformed entry takes its default"""
+    data = data if isinstance(data, dict) else {}
+    defaults = JogSetup()
+    general = data.get('general') if isinstance(data.get('general'), dict) else {}
+    values = {}
+    for name, _ in _GENERAL:
+        default = getattr(defaults, name)
+        try:
+            values[name] = type(default)(general.get(name, default))
+        except (TypeError, ValueError):
+            values[name] = default
+    if values['move_keys'] not in MOVE_KEY_SETS:
+        values['move_keys'] = defaults.move_keys
+    if values['step_factor'] <= 1:
+        values['step_factor'] = defaults.step_factor
+    setup = JogSetup(**values)
+
+    def names(key) -> List[str]:
+        items = data.get(key)
+        return [str(n) for n in items if n] if isinstance(items, list) else []
+
+    def mapping(key) -> dict:
+        items = data.get(key)
+        return items if isinstance(items, dict) else {}
+
+    setup.hidden, setup.headless, setup.continuous = names('hidden'), names('headless'), names('continuous')
+    for name, step in mapping('steps').items():
+        try:
+            if float(step) > 0:
+                setup.steps[str(name)] = float(step)
+        except (TypeError, ValueError):
+            pass
+    for name, number in mapping('pair_numbers').items():
+        try:
+            if int(number) in GROUP_NUMBERS:
+                setup.pair_numbers[str(name)] = int(number)
+        except (TypeError, ValueError):
+            pass
+    setup.axes = {str(k): v for k, v in mapping('axes').items() if v in AXES}
+    for number, text in mapping('pair_names').items():
+        try:
+            if int(number) in GROUP_NUMBERS and str(text).strip():
+                setup.pair_names[int(number)] = str(text).strip()
+        except (TypeError, ValueError):
+            pass
+    for extra in data.get('extra_keys') or []:
+        if isinstance(extra, dict):
+            setup.extra_keys.append(ExtraKeys(str(extra.get('actuator', '') or ''), str(extra.get('key_minus', '') or ''),
+                                              str(extra.get('key_plus', '') or '')))
+    return setup
+
+
 # ---------------------------------------------------------------------------------------------- store
 class SetupStore:
     """The named setups of a folder"""

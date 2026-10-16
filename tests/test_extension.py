@@ -579,6 +579,7 @@ def test_saved_positions(jog, monkeypatch):
     assert ext.positions.get(['Stage X', 'Stage Y'], 'HA').values == pytest.approx([x0, y0])
     assert 'HA' in ext.panel.message_label.text()
     tap(ext, Qt.Key_D)
+    idle(ext, spies)                                     # D done before W: a history point 'after D' exists
     tap(ext, Qt.Key_W)
     idle(ext, spies)
     menu = ext.positions_menu()

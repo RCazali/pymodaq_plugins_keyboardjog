@@ -327,6 +327,11 @@ class JogPanel(QtWidgets.QFrame):
         header.addWidget(self.help_button)
         layout.addLayout(header)
 
+        self.top_container = QtWidgets.QWidget()        # for an application embedding the panel (set_top_widget)
+        QtWidgets.QVBoxLayout(self.top_container).setContentsMargins(0, 0, 0, 2)
+        self.top_container.setVisible(False)
+        layout.addWidget(self.top_container)
+
         body = QtWidgets.QHBoxLayout()
         body.setSpacing(8)
         left = QtWidgets.QVBoxLayout()
@@ -425,6 +430,11 @@ class JogPanel(QtWidgets.QFrame):
         return text.name(), muted.name()
 
     # ------------------------------------------------------------------ settings / history containers
+    def set_top_widget(self, widget: QtWidgets.QWidget):
+        """A widget of the embedding application, between the header and the lines (it must refuse the focus)"""
+        self.top_container.layout().addWidget(widget)
+        self.top_container.setVisible(True)
+
     def set_settings_widget(self, widget: QtWidgets.QWidget):
         self.settings_container.layout().addWidget(widget)
 
