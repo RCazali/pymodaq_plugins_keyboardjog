@@ -64,7 +64,7 @@ Qt = QtCore.Qt
 HELP = ('Click this window: green border = the keys move the actuators, red = keys ignored.\n'
         '1-9, 0 or a click on a row: select an actuator (or a pair). W A S D (or the arrows, see the settings): move\n'
         'the selection (A/D the horizontal actuator, S/W the vertical one).\n'
-        'Right-click a line: pair, keys, continuous, headless, hide. Settings: the same, extra keys, setups.\n'
+        'Right-click a line: number, rename, pair, keys, continuous, headless, hide. Settings: extra keys, setups.\n'
         '+ / - : multiply / divide the step of the selection. Continuous mode: Shift = step x10, Ctrl = step /10.\n'
         'Graph button: history of the moves of the selection (click a point to go back there).\n'
         'Pin button: save the position of the selection under a name, go back to a saved position.')
@@ -108,6 +108,7 @@ class KeyboardJog(CustomExt):
         self.setup = JogSetup()
         self.setup_name = ''
         self.pair_names: Dict[int, str] = {}    # not in the settings tree: edited from the right-click menu
+        self.actuator_names: Dict[str, str] = {}    # idem
         self.groups: List[Group] = []
         self.selected = 0                       # index of the selected group
         self._extra_labels: Dict[str, List[str]] = {}
@@ -298,10 +299,12 @@ class KeyboardJog(CustomExt):
     def _read_setup(self) -> JogSetup:
         setup = ui_settings.read_setup(self.settings)
         setup.pair_names = dict(self.pair_names)
+        setup.actuator_names = dict(self.actuator_names)
         return setup
 
     def _write_tree(self, setup: JogSetup):
         self.pair_names = dict(setup.pair_names)
+        self.actuator_names = dict(setup.actuator_names)
         self._loading = True
         try:
             ui_settings.write_setup(self.settings, setup, list(self.ports), self.units(), self._remove_extra_keys)
@@ -460,7 +463,8 @@ class KeyboardJog(CustomExt):
             unit = self.ports[name].units() if name in self.ports else ''
             extra = f", keys {'/'.join(x or '–' for x in self._extra_labels[name])}" \
                 if name in self._extra_labels else ''
-            lines.append(f"{name}: {role}, step {self.controller.step(name):.4g} {unit}".rstrip()
+            title = name if self.setup.label(name) == name else f'{self.setup.label(name)} ({name})'
+            lines.append(f"{title}: {role}, step {self.controller.step(name):.4g} {unit}".rstrip()
                          + (', continuous' if self.controller.is_continuous(name) else '')
                          + (', headless' if self.setup.is_headless(name) else '') + extra)
         return '\n'.join(lines)
@@ -473,37 +477,56 @@ class KeyboardJog(CustomExt):
         self.panel.setFocus(Qt.OtherFocusReason)
 
     def group_menu(self, index: int, actuator: str = '') -> Optional[QtWidgets.QMenu]:
-        """Right-click menu of a line: the settings of its actuator (pair, keys, continuous, headless, hide); for a
-        pair, one submenu per actuator, rename and unpair"""
+        """Right-click menu of a line: its number (the whole line moves to it), rename; for a single actuator, pair
+        with and its settings (keys, continuous, headless, hide); for a pair, unpair and one submenu per actuator"""
         if not 0 <= index < len(self.groups):
             return None
         group = self.groups[index]
         menu = QtWidgets.QMenu(self.panel)
+        self._add_number_menu(menu, index)
+        menu.addAction(f"Rename '{group.title}'…", lambda: self.rename_group(index))
         if not group.is_pair:
             name = group.actuators[0]
             others = [g.actuators[0] for g in self.groups if not g.is_pair and g is not group]
-            sub = menu.addMenu(f"Pair '{name}' with")
+            sub = menu.addMenu(f"Pair '{group.title}' with")
             sub.setEnabled(bool(others))
             for other in others:
-                sub.addAction(other, lambda o=other: self.pair_actuators(name, o))
-            self._add_actuator_actions(menu, name)
+                sub.addAction(self.setup.label(other), lambda o=other: self.pair_actuators(name, o))
+            self._add_actuator_actions(menu, name, pair_number=False)
             return menu
-        for name in group.actuators:
-            self._add_actuator_actions(menu.addMenu(name), name)
-        menu.addSeparator()
-        menu.addAction(f"Rename '{group.title}'…", lambda: self.rename_pair(index))
         menu.addAction('Unpair', lambda: self.unpair(index))
+        menu.addSeparator()
+        for name in group.actuators:
+            sub = menu.addMenu(self.setup.label(name))
+            sub.addAction(f"Rename '{self.setup.label(name)}'…", lambda n=name: self.rename_actuator(n))
+            self._add_actuator_actions(sub, name)
         return menu
 
-    def _add_actuator_actions(self, menu: QtWidgets.QMenu, name: str):
-        sub = menu.addMenu('Pair number')
-        current = number_label(self.setup.number(name)) or AUTO
-        for choice in PAIR_CHOICES:
-            if choice == HIDDEN:
-                continue
-            action = sub.addAction(choice, lambda c=choice: self.set_actuator_setting(name, 'pair', c))
+    def _add_number_menu(self, menu: QtWidgets.QMenu, index: int):
+        """Number key of the whole line; a number taken by another line: the two lines swap their numbers"""
+        group = self.groups[index]
+        sub = menu.addMenu('Number')
+        choices = ([] if group.is_pair else [None]) + list(GROUP_NUMBERS)
+        for number in choices:
+            other = next((g for g in self.groups if g.number == number and g is not group), None) \
+                if number is not None else None
+            text = AUTO if number is None else number_label(number)
+            if other is not None:
+                text += f'\t{other.title}'
+            action = sub.addAction(text, lambda n=number: self.set_group_number(index, n))
             action.setCheckable(True)
-            action.setChecked(choice == current)
+            action.setChecked(number == group.number if group.explicit else number is None)
+
+    def _add_actuator_actions(self, menu: QtWidgets.QMenu, name: str, pair_number: bool = True):
+        if pair_number:
+            sub = menu.addMenu('Pair number')
+            current = number_label(self.setup.number(name)) or AUTO
+            for choice in PAIR_CHOICES:
+                if choice == HIDDEN:
+                    continue
+                action = sub.addAction(choice, lambda c=choice: self.set_actuator_setting(name, 'pair', c))
+                action.setCheckable(True)
+                action.setChecked(choice == current)
         sub = menu.addMenu('Keys')
         k = self._labels
         for axis, keys in ((HORIZONTAL, f'{k[LEFT]}/{k[RIGHT]}'), (VERTICAL, f'{k[DOWN]}/{k[UP]}')):
@@ -538,8 +561,9 @@ class KeyboardJog(CustomExt):
             self.apply_settings()
             self._set_dirty(True)
 
-    def _ask_name(self, title: str, default: str) -> Optional[str]:
-        text, ok = QtWidgets.QInputDialog.getText(self.mainwindow, title, 'Name of the pair:', text=default)
+    def _ask_name(self, title: str, default: str, what: str = 'pair') -> Optional[str]:
+        text, ok = QtWidgets.QInputDialog.getText(self.mainwindow, title, f'Name of the {what} (empty: default name):',
+                                                  text=default)
         return text.strip() if ok else None
 
     def pair_actuators(self, first: str, second: str, name: Optional[str] = None):
@@ -562,20 +586,76 @@ class KeyboardJog(CustomExt):
                                      second: {'pair': label, 'axis': VERTICAL}})
         self.select_actuator(first)
 
-    def rename_pair(self, index: int, name: Optional[str] = None):
-        if not 0 <= index < len(self.groups) or not self.groups[index].is_pair:
+    def rename_group(self, index: int, name: Optional[str] = None):
+        """Rename a line: the name of the pair, or of the actuator for a single one ('' = back to the default name)"""
+        if not 0 <= index < len(self.groups):
             return
         group = self.groups[index]
+        if not group.is_pair:
+            self.rename_actuator(group.actuators[0], name)
+            return
         if group.number is None:
             return
         if name is None:
             name = self._ask_name('Rename pair', group.title)
             if name is None:
                 return
-        self.pair_names[group.number] = name.strip()
+        if name.strip():
+            self.pair_names[group.number] = name.strip()
+        else:
+            self.pair_names.pop(group.number, None)
+        self._names_changed()
+
+    def rename_actuator(self, actuator: str, name: Optional[str] = None):
+        """Name shown for an actuator instead of its Dashboard name ('' = its Dashboard name again)"""
+        if name is None:
+            name = self._ask_name('Rename actuator', self.setup.label(actuator), f"actuator '{actuator}'")
+            if name is None:
+                return
+        if name.strip() and name.strip() != actuator:
+            self.actuator_names[actuator] = name.strip()
+        else:
+            self.actuator_names.pop(actuator, None)
+        self._names_changed()
+
+    def _names_changed(self):
         self.apply_settings()
         self._set_dirty(True)
         self.panel.setFocus(Qt.OtherFocusReason)
+
+    def set_group_number(self, index: int, number: Optional[int]):
+        """Give a whole line (a single actuator or a pair) this number key (None: auto, single actuators only). The
+        line that had this number takes the old number of this one: the two lines swap"""
+        if not 0 <= index < len(self.groups):
+            return
+        group = self.groups[index]
+        if number is None:
+            if not group.is_pair:
+                self._set_actuator_settings({group.actuators[0]: {'pair': AUTO}})
+            return
+        if group.explicit and group.number == number:
+            return
+        old = group.number
+        other = next((g for g in self.groups if g.number == number and g is not group and g.explicit), None)
+        changes = {name: {'pair': number_label(number)} for name in group.actuators}
+        names = dict(self.pair_names)
+        mine = names.pop(old, None) if group.is_pair and old is not None else None
+        theirs = names.pop(number, None)
+        if other is not None:
+            if old is None:                       # this line had no number: the other one takes a free one
+                taken = {g.number for g in self.groups if g.explicit and g is not other} | {number}
+                old = next((n for n in GROUP_NUMBERS if n not in taken), None)
+            if old is None and other.is_pair:
+                self.show_message('No free number for the pair on this number: unpair a pair first', warning=True)
+                return
+            changes.update({name: {'pair': number_label(old) if old else AUTO} for name in other.actuators})
+            if theirs and other.is_pair and old is not None:
+                names[old] = theirs
+        if mine:
+            names[number] = mine
+        self.pair_names = names
+        self._set_actuator_settings(changes)
+        self.select_actuator(group.actuators[0])
 
     def unpair(self, index: int):
         if not 0 <= index < len(self.groups) or not self.groups[index].is_pair:

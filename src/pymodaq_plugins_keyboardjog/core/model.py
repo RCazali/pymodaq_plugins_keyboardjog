@@ -9,6 +9,7 @@ Keyboard model:
   left on ``auto`` is a group of its own and takes the first free number; a ``hidden`` one is not in the window at
   all. The number key (1..9, 0) or a click selects a group; the movement keys (W A S D and / or the arrows) move it:
   left / right the *horizontal* actuator, down / up the *vertical* one; ``+`` / ``-`` scale its steps;
+* a pair has a name (by its number), and any actuator a name of its own shown instead of its Dashboard name;
 * **extra keys** bind a (not hidden) actuator to two keys of the user's choice, active whatever the selection.
 
 A setup holds all of this plus the general options; it is saved / loaded by name.
@@ -69,6 +70,7 @@ class JogSetup:
     pair_numbers: Dict[str, int] = field(default_factory=dict)   # actuator -> 1..10 (absent: auto)
     axes: Dict[str, str] = field(default_factory=dict)           # actuator -> horizontal / vertical
     pair_names: Dict[int, str] = field(default_factory=dict)     # group number -> name of the pair
+    actuator_names: Dict[str, str] = field(default_factory=dict)  # actuator -> name shown in the window
     extra_keys: List[ExtraKeys] = field(default_factory=list)
     all_continuous: bool = False                                 # every actuator in continuous mode
     move_keys: str = WASD
@@ -98,6 +100,10 @@ class JogSetup:
     def is_headless(self, actuator: str) -> bool:
         return actuator in self.headless
 
+    def label(self, actuator: str) -> str:
+        """Name shown for an actuator: its own name if it was renamed, its Dashboard name otherwise"""
+        return (self.actuator_names.get(actuator) or '').strip() or actuator
+
     def key_bound_actuators(self) -> List[str]:
         out = []
         for extra in self.extra_keys:
@@ -113,7 +119,7 @@ class JogSetup:
         """Every actuator this setup refers to"""
         out = []
         for name in (list(self.hidden) + list(self.pair_numbers) + self.key_bound_actuators() + list(self.headless)
-                     + list(self.continuous) + list(self.axes) + list(self.steps)):
+                     + list(self.continuous) + list(self.axes) + list(self.steps) + list(self.actuator_names)):
             if name not in out:
                 out.append(name)
         return out
@@ -140,6 +146,7 @@ class JogSetup:
                             'pair_numbers': keep(self.pair_numbers),
                             'axes': keep(self.axes),
                             'pair_names': dict(self.pair_names),
+                            'actuator_names': keep(self.actuator_names),
                             'extra_keys': extra_keys})
         return setup, warnings
 
@@ -208,6 +215,10 @@ def build_groups(setup: JogSetup, order: Sequence[str]) -> Tuple[List[Group], Li
         group.actuators = group.moved + [a for a in group.actuators if a not in group.moved]
         if group.is_pair:
             group.name = setup.pair_names.get(group.number, '').strip()
+            if not group.name and any(setup.label(a) != a for a in group.actuators):
+                group.name = ' / '.join(setup.label(a) for a in group.actuators)
+        else:
+            group.name = setup.label(group.actuators[0])
     groups.sort(key=lambda g: (g.number is None, g.number or 0, order.index(g.actuators[0])))
     return groups, problems
 

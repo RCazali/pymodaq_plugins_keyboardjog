@@ -60,7 +60,11 @@ Extensions
     turns orange while it moves and its moves are seen in the history only.
   * **Pairs**: two actuators with the same pair number form one group, selected by that number and moved together:
     the horizontal one with A / D, the vertical one with S / W (e.g. the X and Y of a stage). Quicker: right-click
-    a row, *Pair 'X' with ▸ Y* (X horizontal, Y vertical). Right-click a pair to rename or unpair it.
+    a row, *Pair 'X' with ▸ Y* (X horizontal, Y vertical). Right-click a pair to unpair it.
+  * **Number and name of a line** (right-click it): *Number ▸* moves the whole line (a single actuator or a pair)
+    to that number key; the line that had it takes the old number (they swap). *Rename…* gives a pair, or a single
+    actuator, a name shown instead of the Dashboard name (empty: back to the default). The actuators of a pair can be
+    renamed too (their submenu). The names are saved in the setup.
   * **Extra keys** (settings): two keys of your choice (e.g. PgDown / PgUp for a focus) that always move an
     actuator, whatever the selection. A key used twice is reported in the settings and disabled.
   * **Step size** per actuator, in its units. ``+`` multiplies the step of the selection by the step factor (10 by

@@ -446,17 +446,17 @@ def test_right_click_menu(jog):
     ext, spies = jog
     configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
     menu = ext.group_menu(0)                             # right-click menu of a single actuator
-    assert [a.text() for a in menu.actions()] == ["Pair 'Stage X' with", 'Pair number', 'Keys', 'Continuous',
-                                                  'Headless (no value shown)', 'Hide']
-    assert [a.text() for a in menu.actions()[0].menu().actions()] == ['Stage Y', 'Focus Z']
-    pair_number = menu.actions()[1].menu()
-    assert [a.text() for a in pair_number.actions() if a.isChecked()] == ['auto']
+    assert [a.text() for a in menu.actions()] == ['Number', "Rename 'Stage X'…", "Pair 'Stage X' with", 'Keys',
+                                                  'Continuous', 'Headless (no value shown)', 'Hide']
+    assert [a.text() for a in menu.actions()[2].menu().actions()] == ['Stage Y', 'Focus Z']
+    number = menu.actions()[0].menu()
+    assert [a.text() for a in number.actions() if a.isChecked()] == ['auto']
     menu_action(menu, 'Continuous').trigger()
     assert ext.controller.continuous == {'Stage X'}
     assert actuator_group(ext.settings, 'Stage X').child('continuous').value() is True
     menu_action(ext.group_menu(2), 'Keys', 'vertical (S/W)').trigger()
     assert ext.setup.axis('Focus Z') == VERTICAL
-    menu_action(ext.group_menu(2), 'Pair number', '5').trigger()
+    menu_action(ext.group_menu(2), 'Number', '5').trigger()
     assert [g.label for g in ext.groups] == ['1', '2', '5']
     menu_action(ext.group_menu(1), 'Hide').trigger()
     assert [g.actuators for g in ext.groups] == [['Stage X'], ['Focus Z']]
@@ -495,9 +495,9 @@ def test_pairs_from_the_main_view(jog):
     idle(ext, spies)
     assert spies['Focus Z'].moves == [pytest.approx(0.01)]
     menu = ext.group_menu(0)                             # right-click menu of a pair: a submenu per actuator
-    assert [a.text() for a in menu.actions() if not a.isSeparator()] == ['Stage X', 'Focus Z',
-                                                                         "Rename 'Sample XZ'…", 'Unpair']
-    ext.rename_pair(0, 'Microscope')
+    assert [a.text() for a in menu.actions() if not a.isSeparator()] == ['Number', "Rename 'Sample XZ'…", 'Unpair',
+                                                                         'Stage X', 'Focus Z']
+    ext.rename_group(0, 'Microscope')
     assert ext.panel.header_text(0) == 'Microscope'
     assert ext.settings['setup', 'current'].endswith('*')
     ext.save_setup('pairs')
@@ -505,6 +505,37 @@ def test_pairs_from_the_main_view(jog):
     assert loaded.pair_names == {1: 'Microscope'} and loaded.pair_numbers == {'Stage X': 1, 'Focus Z': 1}
     ext.unpair(0)
     assert [g.actuators for g in ext.groups] == [['Stage X'], ['Stage Y'], ['Focus Z']]
+
+
+def test_rename_and_renumber_lines(jog):
+    ext, spies = jog
+    configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
+    ext.rename_group(2, 'Focus')                         # a single actuator can be renamed
+    assert ext.panel.header_text(2) == 'Focus'
+    assert menu_action(ext.group_menu(2), "Rename 'Focus'…")
+    ext.pair_actuators('Stage X', 'Stage Y')             # pair 1, Focus Z on 2
+    ext.rename_group(0, 'Stage')
+    assert [(g.label, g.title) for g in ext.groups] == [('1', 'Stage'), ('2', 'Focus')]
+    number = menu_action(ext.group_menu(0), 'Number').menu()
+    assert 'auto' not in [a.text() for a in number.actions()]          # a pair always has a number
+    menu_action(ext.group_menu(0), 'Number', '4').trigger()            # the whole pair moves to 4
+    assert [(g.label, g.actuators, g.title) for g in ext.groups] == [('1', ['Focus Z'], 'Focus'),
+                                                                     ('4', ['Stage X', 'Stage Y'], 'Stage')]
+    assert ext.panel.selected_names() == ['Stage X', 'Stage Y']
+    menu_action(ext.group_menu(0), 'Number', '4\tStage').trigger()     # taken by the pair: the lines swap
+    assert [(g.label, g.title) for g in ext.groups] == [('1', 'Stage'), ('4', 'Focus')]
+    ext.set_group_number(1, 1)                           # and back
+    assert [(g.label, g.title) for g in ext.groups] == [('1', 'Focus'), ('4', 'Stage')]
+    ext.rename_actuator('Stage X', 'Mirror H')           # an actuator of a pair: its submenu
+    assert ext.groups[1].title == 'Stage'
+    ext.save_setup('names')
+    loaded = ext.store.load('names')
+    assert loaded.actuator_names == {'Focus Z': 'Focus', 'Stage X': 'Mirror H'}
+    assert loaded.pair_names == {4: 'Stage'}
+    ext.rename_group(0, '')                              # empty: the Dashboard name again
+    assert ext.panel.header_text(0) == 'Focus Z'
+    ext.rename_group(1, '')                              # pair without a name: the names of its actuators
+    assert ext.groups[1].title == 'Mirror H / Stage Y'
 
 
 def test_move_keys_setting(jog):

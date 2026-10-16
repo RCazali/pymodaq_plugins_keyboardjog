@@ -39,7 +39,7 @@ COLUMNS_PER_BLOCK = 6    # number, name, horizontal, vertical, units, gap
 
 def hint_text(move_keys_label: str) -> str:
     return (f'1-9, 0 or click: select (again: reset Δ)   {move_keys_label}: move   + / -: step\n'
-            f'right-click a line: pair, keys, continuous, headless, hide')
+            f'right-click a line: number, rename, pair, keys, continuous, headless, hide')
 
 
 def group_color(index: int) -> str:

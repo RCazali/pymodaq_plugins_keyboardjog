@@ -55,7 +55,8 @@ def setup_to_parameter(setup: JogSetup) -> Parameter:
             {'name': 'continuous', 'type': 'bool', 'value': name in setup.continuous},
             {'name': 'step', 'type': 'float', 'value': float(setup.steps.get(name, 0.0))},   # 0: default
             {'name': 'pair', 'type': 'int', 'value': setup.number(name) or 0},              # 0: auto
-            {'name': 'axis', 'type': 'str', 'value': setup.axes.get(name, '')}]})
+            {'name': 'axis', 'type': 'str', 'value': setup.axes.get(name, '')},
+            {'name': 'label', 'type': 'str', 'value': setup.actuator_names.get(name, '')}]})       # '': not renamed
     names = [{'name': f'p{number:02d}', 'type': 'group', 'children': [
         {'name': 'number', 'type': 'int', 'value': number},
         {'name': 'name', 'type': 'str', 'value': text}]}
@@ -135,6 +136,9 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
         axis = _value(group, 'axis', '')
         if axis in AXES:
             setup.axes[name] = axis
+        label = _value(group, 'label', '').strip()
+        if label:
+            setup.actuator_names[name] = label
     for group in _children(param, 'pair_names'):
         number = _value(group, 'number', 0)
         text = _value(group, 'name', '').strip()
@@ -196,6 +200,7 @@ def setup_to_dict(setup: JogSetup) -> dict:
             'pair_numbers': {k: int(v) for k, v in setup.pair_numbers.items()},
             'axes': dict(setup.axes),
             'pair_names': {str(k): v for k, v in setup.pair_names.items() if v},
+            'actuator_names': {k: v for k, v in setup.actuator_names.items() if v},
             'extra_keys': [{'actuator': e.actuator, 'key_minus': e.key_minus, 'key_plus': e.key_plus}
                            for e in setup.extra_keys]}
 
@@ -246,6 +251,8 @@ def setup_from_dict(data: dict) -> JogSetup:
                 setup.pair_names[int(number)] = str(text).strip()
         except (TypeError, ValueError):
             pass
+    setup.actuator_names = {str(k): str(v).strip() for k, v in mapping('actuator_names').items()
+                            if v is not None and str(v).strip()}
     for extra in data.get('extra_keys') or []:
         if isinstance(extra, dict):
             setup.extra_keys.append(ExtraKeys(str(extra.get('actuator', '') or ''), str(extra.get('key_minus', '') or ''),

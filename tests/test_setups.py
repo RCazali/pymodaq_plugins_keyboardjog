@@ -16,7 +16,7 @@ def sample_setup():
     return JogSetup(hidden=['Rotation µ'], headless=['Stage X'], continuous=['Stage Y'],
                     pair_numbers={'Stage X': 3, 'Stage Y': 3, 'Focus Z': 10},
                     axes={'Stage X': HORIZONTAL, 'Stage Y': VERTICAL, 'Focus Z': VERTICAL},
-                    pair_names={3: 'Sample'}, extra_keys=[ExtraKeys('Focus Z', 'PgDown', 'PgUp')],
+                    pair_names={3: 'Sample'}, actuator_names={'Focus Z': 'Focus µ', 'Stage X': 'X'}, extra_keys=[ExtraKeys('Focus Z', 'PgDown', 'PgUp')],
                     steps={'Stage X': 0.001, 'Stage Y': 2.5, 'Focus Z': 1e-5},
                     all_continuous=True, step_factor=5.0, always_on_top=False, show_history=True, min_interval_ms=120,
                     stop_on_focus_loss=False, move_timeout_s=3.0)
