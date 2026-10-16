@@ -40,6 +40,7 @@ from pymodaq_plugins_keyboardjog.utils import Config as PluginConfig
 from pymodaq_plugins_keyboardjog.core.controller import MotionController
 from pymodaq_plugins_keyboardjog.core.history import HISTORY_FILE, MoveHistory
 from pymodaq_plugins_keyboardjog.core.input import KeyboardInput
+from pymodaq_plugins_keyboardjog.core.log_encoding import ensure_utf8_log_files
 from pymodaq_plugins_keyboardjog.core.keys import (DOWN, LEFT, RIGHT, UP, is_azerty, key_label, key_name,
                                                     movement_labels, movement_reserved_keys, normalize_key_name)
 from pymodaq_plugins_keyboardjog.core.model import (AUTO, GROUP_NUMBERS, HIDDEN, HORIZONTAL, PAIR_CHOICES, VERTICAL,
@@ -89,6 +90,7 @@ class KeyboardJog(CustomExt):
     panel: Optional[JogPanel] = None
 
     def __init__(self, parent: gutils.DockArea, dashboard):
+        ensure_utf8_log_files()  # else each move in μm prints a logging error (cp1252 log file)
         self._loading = True
         self._closing = False
         super().__init__(parent, dashboard)
