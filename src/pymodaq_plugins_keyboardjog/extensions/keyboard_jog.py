@@ -45,7 +45,7 @@ from pymodaq_plugins_keyboardjog.core.keys import (DOWN, LEFT, RIGHT, UP, is_aze
                                                     movement_labels, movement_reserved_keys, normalize_key_name)
 from pymodaq_plugins_keyboardjog.core.model import (AUTO, GROUP_NUMBERS, HIDDEN, HORIZONTAL, PAIR_CHOICES, VERTICAL,
                                                      ExtraKeys, Group, JogSetup, build_groups, build_keymap,
-                                                     direction_map, number_label)
+                                                     complete_pair_axes, direction_map, number_label)
 from pymodaq_plugins_keyboardjog.core.ports import ActuatorPort, actuator_modules, make_ports
 from pymodaq_plugins_keyboardjog.core.positions import POSITIONS_FILE, PositionStore
 from pymodaq_plugins_keyboardjog.core.setups import SetupStore, clean_name, default_folder
@@ -314,6 +314,15 @@ class KeyboardJog(CustomExt):
     def apply_settings(self):
         """Read the settings tree and apply it: controller, key map, main view, window"""
         setup = self._read_setup()
+        axes = complete_pair_axes(setup, list(self.ports))
+        if axes:                        # a pair made from the settings: one actuator per keys
+            self._loading = True
+            try:
+                for name, axis in axes.items():
+                    ui_settings.set_actuator_value(self.settings, name, 'axis', axis)
+            finally:
+                self._loading = False
+            setup.axes.update(axes)
         self.setup = setup
         self.controller.continuous = [n for n in self.ports if setup.is_continuous(n)]
         self.controller.min_interval_s = setup.min_interval_ms / 1000

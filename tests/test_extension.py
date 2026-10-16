@@ -442,6 +442,20 @@ def test_pair_number_and_keys_in_the_settings(jog):
     assert ext.settings['setup', 'current'].endswith('*')
 
 
+def test_pair_from_the_settings_shows_both_values(jog):
+    """Two actuators given the same pair number in the settings (both horizontal by default): the second one takes
+    the vertical keys, so that the line shows and moves both"""
+    ext, spies = jog
+    configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
+    actuator_group(ext.settings, 'Stage X').child('pair').setValue('4')
+    actuator_group(ext.settings, 'Focus Z').child('pair').setValue('4')
+    pair = next(g for g in ext.groups if g.is_pair)
+    assert pair.horizontal == 'Stage X' and pair.vertical == 'Focus Z'
+    assert actuator_group(ext.settings, 'Focus Z').child('axis').value() == VERTICAL
+    assert not ext.settings.child('problems').opts['visible']
+    assert ext.panel.value_text('Focus Z') not in ('',)
+
+
 def test_right_click_menu(jog):
     ext, spies = jog
     configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))

@@ -4,7 +4,8 @@ import pytest
 from helpers import app
 from pymodaq_plugins_keyboardjog.core import keys
 from pymodaq_plugins_keyboardjog.core.model import (HORIZONTAL, VERTICAL, ExtraKeys, Group, JogSetup, build_groups,
-                                                     build_keymap, direction_map, number_label, number_of)
+                                                     build_keymap, complete_pair_axes, direction_map, number_label,
+                                                     number_of)
 
 
 @pytest.fixture(autouse=True)
@@ -104,6 +105,14 @@ def test_pair_problems_and_default_name():
     assert groups[0].title == 'A / B'                      # default name
     assert groups[0].moved == ['A'] and groups[1].moved == ['C', 'D']
     assert len(problems) == 2 and all('both horizontal' in p for p in problems)
+
+
+def test_complete_pair_axes():
+    """Two actuators paired with the same keys (paired from the settings): the second one takes the other keys"""
+    setup = JogSetup(pair_numbers={'A': 1, 'B': 1, 'C': 3, 'D': 3, 'E': 3, 'F': 4, 'G': 4},
+                     axes={'F': VERTICAL, 'G': VERTICAL})
+    assert complete_pair_axes(setup, list('ABCDEFG')) == {'B': VERTICAL, 'G': HORIZONTAL}   # 3 in a group: reported
+    assert complete_pair_axes(JogSetup(pair_numbers={'A': 1, 'B': 1}, axes={'B': VERTICAL}), ['A', 'B']) == {}
 
 
 def test_lines_in_columns_of_at_most_five():

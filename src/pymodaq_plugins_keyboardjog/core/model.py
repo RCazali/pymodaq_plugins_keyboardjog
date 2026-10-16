@@ -223,6 +223,22 @@ def build_groups(setup: JogSetup, order: Sequence[str]) -> Tuple[List[Group], Li
     return groups, problems
 
 
+def complete_pair_axes(setup: JogSetup, order: Sequence[str]) -> Dict[str, str]:
+    """Axis changes giving each actuator of a pair its own keys: two actuators sharing a pair number with the same
+    keys (e.g. paired from the settings, where the keys are horizontal by default) would show and move one of them
+    only. The second one (dashboard order) takes the other keys"""
+    pairs: Dict[int, List[str]] = {}
+    for name in setup.shown_actuators(order):
+        number = setup.number(name)
+        if number is not None:
+            pairs.setdefault(number, []).append(name)
+    changes = {}
+    for names in pairs.values():
+        if len(names) == 2 and setup.axis(names[0]) == setup.axis(names[1]):
+            changes[names[1]] = VERTICAL if setup.axis(names[0]) == HORIZONTAL else HORIZONTAL
+    return changes
+
+
 def direction_map(group: Optional[Group], group_index: int = -1) -> Dict[str, MoveAction]:
     """Movement direction -> move of the selected group: left / right its horizontal actuator, down / up its
     vertical one"""
