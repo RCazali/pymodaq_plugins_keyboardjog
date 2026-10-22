@@ -13,8 +13,11 @@ Rules (safety, see the specification):
 * release: the repetition stops at once (the step in progress finishes);
 * ``release_all`` (focus lost) forgets every held action and can stop the actuators moved by this extension.
 
-A move whose move-done never arrives is forgotten after ``move_timeout_s`` (a warning is logged) so that one lost
-signal does not lock the actuator forever.
+A move whose move-done never arrives is forgotten after ``move_timeout_s`` (a warning is logged), or ``STOP_GRACE_S``
+after this extension stopped it, so that one lost signal does not lock the actuator forever. DAQ_Move then still
+reports the move as running (``move_done_bool`` stays False when the plugin times out, or when its ``stop_motion``
+does not end with a move-done): this flag is not trusted for that actuator until its next move-done, else every
+key would be refused until PyMoDAQ is restarted.
 """
 from __future__ import annotations
 
@@ -33,6 +36,7 @@ from .ports import ActuatorPort
 logger = set_logger(get_module_name(__file__))
 
 TICK_MS = 10
+STOP_GRACE_S = 1.0     # after a stop sent by this extension: time left to the plugin to signal the move-done
 
 
 @dataclass
@@ -40,6 +44,8 @@ class AxisState:
     pending: bool = False             # a move sent by this extension is not done yet
     sent_at: float = 0.0
     done_at: float = float('-inf')
+    stopped_at: Optional[float] = None    # this extension stopped the pending move
+    lost_done: bool = False           # a move-done was lost: the "moving" flag of the module is stale until the next one
     held: List[int] = field(default_factory=list)  # held directions, the last one wins
 
 
@@ -140,6 +146,8 @@ class MotionController(QtCore.QObject):
             if stop and state.pending:
                 port = self.ports.get(name)
                 try:
+                    if state.stopped_at is None:
+                        state.stopped_at = self._clock()
                     port.stop()
                     logger.info(f'{name}: stopped (keyboard released)')
                 except Exception as e:
@@ -165,21 +173,41 @@ class MotionController(QtCore.QObject):
         if state.pending:
             state.pending = False
             state.done_at = self._clock()
+        state.stopped_at = None
+        state.lost_done = False
         self.move_finished.emit(name, value)
         if self.is_continuous(name) and state.held:
             self.tick()
+
+    def _forget_move(self, name: str, state: AxisState, now: float):
+        """The move-done of the pending move will not come: release the actuator, stop repeating (the key has to be
+        pressed again), read its position again"""
+        stopped = state.stopped_at is not None
+        state.pending = False
+        state.done_at = now
+        state.stopped_at = None
+        state.lost_done = True
+        state.held.clear()
+        if stopped:
+            logger.info(f'{name}: no move-done after the stop, actuator released')
+        else:
+            msg = f'{name}: no move-done after {self.move_timeout_s:g} s (target not reached?), actuator released'
+            logger.warning(msg)
+            self.message.emit(msg)
+        port = self.ports.get(name)
+        try:
+            port.request_value()
+        except Exception as e:  # pragma: no cover - never block the controller for a position request
+            logger.debug(f'{name}: position not requested: {e}')
+        self.move_finished.emit(name, None)
 
     def tick(self):
         now = self._clock()
         active = False
         for name, state in self._states.items():
-            if state.pending and now - state.sent_at > self.move_timeout_s:
-                state.pending = False
-                state.done_at = now
-                msg = f'{name}: no move-done after {self.move_timeout_s:g} s, actuator released'
-                logger.warning(msg)
-                self.message.emit(msg)
-                self.move_finished.emit(name, None)
+            if state.pending and (now - state.sent_at > self.move_timeout_s or
+                                  (state.stopped_at is not None and now - state.stopped_at > STOP_GRACE_S)):
+                self._forget_move(name, state, now)
             if (self.is_continuous(name) and state.held and not state.pending
                     and now - state.done_at >= self.min_interval_s):
                 self._try_step(name, state.held[-1], self.multiplier)
@@ -208,9 +236,11 @@ class MotionController(QtCore.QObject):
                 self.message.emit(f'{name} is not initialized')
             return False
         if port.is_moving():
-            if report:
-                self.message.emit(f'{name} is moved by something else: key ignored')
-            return False
+            if not state.lost_done:
+                if report:
+                    self.message.emit(f'{name} is moved by something else: key ignored')
+                return False
+            logger.info(f'{name}: PyMoDAQ still reports the move whose move-done was lost, {what} sent anyway')
         try:
             started = move(port)
         except Exception as e:
@@ -222,6 +252,7 @@ class MotionController(QtCore.QObject):
             return False
         state.pending = True
         state.sent_at = self._clock()
+        state.stopped_at = None
         self.move_started.emit(name)
         if not self._timer.isActive():
             self._timer.start()

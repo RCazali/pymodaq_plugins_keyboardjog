@@ -751,6 +751,34 @@ def test_last_setup_reloaded_at_startup(jog, modules, tmp_path, monkeypatch):
         win.close()
 
 
+def test_plugin_timeout_does_not_lock_the_actuator(jog, modules):
+    """The plugin gives up before reaching the target (its 'timeout' setting): DAQ_Move sends no move-done and keeps
+    move_done_bool False. The next key press must still move the actuator (it used to be refused for ever)."""
+    from helpers import find_param
+    ext, spies = jog
+    module = modules[0]
+    hw = module.settings.child(getattr(module, '_hw_settings_name', 'move_settings'))
+    timeout = find_param(hw, 'timeout')
+    initial = timeout.value()
+    ext.controller.move_timeout_s = 1.5
+    ext.controller.steps['Stage X'] = 1.0                # far more than the epsilon of the Mock
+    try:
+        timeout.setValue(1)
+        set_tau(module, 20000)                           # far too slow: the plugin times out
+        tap(ext, Qt.Key_D)
+        assert wait(lambda: not ext.controller.is_busy('Stage X'), 5)
+        assert not module.move_done_bool                 # the stale flag of DAQ_Move
+        set_tau(module, 50)
+        activate(ext)
+        tap(ext, Qt.Key_D)
+        assert len(spies['Stage X'].moves) == 2
+        assert wait(lambda: module.move_done_bool, 10)   # this move ends normally: the flag is right again
+    finally:
+        timeout.setValue(initial)
+        set_tau(module, 50)
+    idle(ext, spies)
+
+
 @pytest.mark.parametrize('how', ['button', 'title bar'])
 def test_close(modules, tmp_path, monkeypatch, how):
     """The close button and the X of the title bar close the window and stop the moves started here"""

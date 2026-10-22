@@ -47,7 +47,7 @@ class ActuatorPort(ABC):
     def move_abs(self, value: float) -> Optional[bool]:
         """Start an absolute move (go back to a point of the history), its end is signalled through ``on_done``.
         Returns False if no move was started (already at the target: no move-done will come)"""
-        raise NotImplementedError(f'{self.name}: no absolute move')
+        raise NotImplementedError(f'{self.name}: no absolute move')  # noqa: PMQ202 optional capability of a port
 
     @abstractmethod
     def stop(self):

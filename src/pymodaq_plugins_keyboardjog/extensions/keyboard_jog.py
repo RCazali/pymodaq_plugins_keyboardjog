@@ -22,7 +22,7 @@ the keyboard while showing their position. Works without any configuration:
 All the motion goes through the DAQ_Move modules of the Dashboard (``move_rel``, ``move_abs``, ``stop_motion``,
 their signals), see ``core/ports.py``.
 
-Compatibility: PyMoDAQ 5.1.x (tested on 5.1.10, PyQt5) and 5.3.x (tested on 5.3.4, PyQt6).
+Compatibility: PyMoDAQ 5.1.x (tested on 5.1.10, PyQt5) and 5.3.x (tested on 5.3.4 and 5.3.8, PyQt6).
 """
 from __future__ import annotations
 
@@ -152,9 +152,6 @@ class KeyboardJog(CustomExt):
         self.tree.setMinimumHeight(320)
         self.panel.set_settings_widget(self.tree)
 
-    def setup_docks(self):        # PyMoDAQ 5.1 calls setup_docks from setup_ui
-        self.setup_docks_and_widgets()
-
     def setup_menus_and_toolbars(self, menubar=None):
         # PyMoDAQ 5.3: the Dashboard checks the 'show_dashboard' action of the extensions it opens
         create = getattr(self, 'create_dashboard_toolbar', None)
@@ -163,9 +160,6 @@ class KeyboardJog(CustomExt):
                 create(add_dashboard=True, add_experiment=False, add_state=False, add_break=False)
             except Exception as e:  # pragma: no cover - never block the extension for a toolbar
                 logger.warning(f'dashboard toolbar not created: {e}')
-
-    def setup_menu(self, menubar=None):
-        pass
 
     def setup_actions(self):
         pass  # no toolbar: everything is in the compact panel and its settings
@@ -1161,15 +1155,25 @@ class KeyboardJog(CustomExt):
         self.show_dashboard(True)
 
     def _quit_fun(self) -> bool:
+        """Guard of CustomExt.quit_fun: nothing can block the closing, stop and clean up first. CustomExt.quit_fun
+        then closes the window and calls show_dashboard (overridden above: the Dashboard closeEvent is kept)"""
+        self.shutdown()
         return True
 
-    def quit_fun(self) -> bool:
-        """Close the extension. CustomExt.quit_fun is not called: in PyMoDAQ 5.3 it calls show_dashboard, which
-        replaces the closeEvent of the Dashboard window (its close button would then do nothing)"""
-        self.shutdown()
+
+if not hasattr(CustomExt, 'setup_docks_and_widgets'):  # PyMoDAQ 5.1: setup_ui calls the former hook names
+    KeyboardJog.setup_docks = KeyboardJog.setup_docks_and_widgets
+    KeyboardJog.setup_menu = KeyboardJog.setup_menus_and_toolbars
+
+if not hasattr(CustomExt, '_quit_fun'):  # PyMoDAQ 5.1: quit_fun only closes the window, without the _quit_fun guard
+    def _quit_with_guard(self) -> bool:
+        if not self._quit_fun():
+            return False
         if self.mainwindow is not None:
             self.mainwindow.close()
         return True
+
+    KeyboardJog.quit_fun = _quit_with_guard
 
 
 def main():

@@ -147,15 +147,55 @@ def test_release_all_stops_pending_moves(rig):
 def test_move_timeout_releases_the_actuator(rig):
     ctrl, ports, clock, messages = rig
     ctrl.move_timeout_s = 2.0
-    ctrl.press(X_PLUS)
-    ports['X'].moving = False                 # move-done lost
+    ctrl.press(X_PLUS)                        # move-done lost: DAQ_Move keeps reporting the move as running
     clock.advance(2.5)
     ctrl.tick()
     assert not ctrl.is_busy('X')
     assert any('no move-done' in m for m in messages)
     ctrl.release(X_PLUS)
+    ctrl.press(X_PLUS)                        # the stale "moving" flag does not lock the actuator
+    assert len(ports['X'].moves) == 2
+    ports['X'].finish()                       # a move-done: the flag is trusted again
+    ports['X'].external_moving = True
+    ctrl.release(X_PLUS)
     ctrl.press(X_PLUS)
     assert len(ports['X'].moves) == 2
+    assert any('something else' in m for m in messages)
+
+
+def test_continuous_stops_repeating_after_a_lost_move_done(rig):
+    """Plugin timeout in continuous mode: the actuator is released but the held key must be pressed again"""
+    ctrl, ports, clock, _ = rig
+    ctrl.continuous = {'X', 'Y'}
+    ctrl.move_timeout_s = 2.0
+    ctrl.press(X_PLUS)
+    clock.advance(2.5)
+    ctrl.tick()
+    clock.advance(1)
+    ctrl.tick()
+    assert ports['X'].moves == [0.5] and not ctrl.is_held('X')
+    ctrl.press(X_PLUS)
+    assert ports['X'].moves == [0.5, 0.5]
+    ports['X'].finish()
+    assert len(ports['X'].moves) == 3         # repeating again
+
+
+def test_stop_without_move_done_does_not_lock_the_actuator(rig):
+    """Focus lost during a continuous move with a plugin whose stop_motion sends no move-done (common)"""
+    ctrl, ports, clock, messages = rig
+    ctrl.continuous = {'X', 'Y'}
+    ctrl.press(X_PLUS)
+    ctrl.release_all(stop=True)
+    assert ports['X'].stops == 1
+    clock.advance(0.5)
+    ctrl.tick()
+    assert ctrl.is_busy('X')                  # the plugin may still signal the move-done
+    clock.advance(1)
+    ctrl.tick()
+    assert not ctrl.is_busy('X')
+    assert not any('no move-done' in m for m in messages)    # expected after a stop: logged only
+    ctrl.press(X_PLUS)
+    assert ports['X'].moves == [0.5, 0.5]
 
 
 def test_scale_steps(rig):
