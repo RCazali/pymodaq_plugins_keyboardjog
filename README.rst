@@ -54,7 +54,8 @@ Extensions
     to go there; right-click a point of the history to save it). Kept in
     ``<PyMoDAQ local folder>/KeyboardJog/positions.json``, independent of the setups.
   * **Settings of each actuator** (*Settings > Actuators*, or right-click its line): *Pair* (``hidden``, ``auto``,
-    1..9, 0), *Keys* (``horizontal``: A / D, ``vertical``: S / W; horizontal by default), *Step*, *Continuous* and
+    1..9, 0), *Keys* (``horizontal``: A / D, ``vertical``: S / W; horizontal by default), *Invert keys* (the - / +
+    keys swapped, also in the right-click menu), *Step*, *Continuous*, *Slow speed*, *Fast speed (Shift)* and
     *Headless*. An actuator on ``auto`` takes the first free number, a ``hidden`` one is not in the window (its
     extra keys are disabled). A **headless** actuator shows no value (e.g. a picomotor without encoder): its name
     turns orange while it moves and its moves are seen in the history only.
@@ -71,9 +72,19 @@ Extensions
     default), ``-`` divides it.
   * **Step mode** (default): one key press = one relative move of one step. Holding the key does nothing more.
   * **Continuous mode** (per actuator, or all of them with *Motion > All continuous*; ``cont.`` in the detail
-    line): steps are repeated while the key is
-    held, each one sent only once the previous move is done (moves are never queued), with an optional minimum
-    interval. While held, **Shift** = step x10, **Ctrl** = step /10 (the stored step is unchanged).
+    line): the actuator moves while the key is held.
+
+    - **Plugin with a continuous jog** (the ``jog`` command, e.g. ZaberJog, PicomotorJog, StandaJog of
+      ``pymodaq_plugins_hhglab``): a move at **constant speed** started at the key press and stopped at the release,
+      as a native velocity move of the controller (Zaber ``move vel``, picomotor ``MV``, Standa left / right). The
+      *Slow speed*, the *Fast speed* while **Shift** is held, slow / 10 with **Ctrl** (pressed or released during
+      the move: the speed changes at once). The detail line shows the two speeds; ``+`` / ``-`` scale them. The
+      window sends a keep-alive every 0.5 s while the key is held: the plugin stops the motor if they stop coming
+      (frozen window); a jog is always stopped when the window loses the focus, whatever *Stop on focus loss*. The
+      end point of each move is recorded in the history.
+    - **Other plugins**: steps are repeated while the key is held, each one sent only once the previous move is done
+      (moves are never queued), with an optional minimum interval. While held, **Shift** = step x10, **Ctrl** =
+      step /10 (the stored step is unchanged).
   * **History** (graph button, hidden by default, on the right side): the end-of-move positions of the selected
     group, whatever moved
     it, in 2D for a pair (old points grey, recent ones yellow, live position as a cross). Hover a point for its
@@ -140,7 +151,7 @@ or, for development, ``pip install -e .`` in a clone of this repository, then ``
 To be discussed (not implemented)
 =================================
 
-Keyboard layout independence for the extra keys (physical keys / AZERTY-QWERTZ presets), axis inversion / swap per pair, emergency stop key, software limits and maximum step, lock during scans, display
+Keyboard layout independence for the extra keys (physical keys / AZERTY-QWERTZ presets), axis swap per pair, emergency stop key, software limits and maximum step, lock during scans, display
 interactions (absolute position entry, mouse wheel), gamepad support (the input
-handling is already "input source -> action"), true continuous motion (needs DAQ_Move evolutions), smart default
+handling is already "input source -> action"), continuous jog for more plugins (the `jog` command), smart default
 pairs on first launch.

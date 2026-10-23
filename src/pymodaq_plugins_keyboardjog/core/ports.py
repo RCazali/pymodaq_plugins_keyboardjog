@@ -1,9 +1,14 @@
 """Access to the Dashboard actuators.
 
-**This is the only module touching DAQ_Move objects.** It uses their public API only: ``move_rel``,
-``move_abs`` (go back to a point of the history), ``stop_motion``, ``get_actuator_value``, the ``current_value_signal`` / ``move_done_signal`` signals and the
-``title``, ``units``, ``initialized_state``, ``move_done_bool`` properties. DAQ_Move handles its own hardware thread,
-everything here runs in the Qt main thread.
+**This is the only module touching DAQ_Move objects.** It uses their public API: ``move_rel``,
+``move_abs`` (go back to a point of the history), ``stop_motion``, ``get_actuator_value``, the ``current_value_signal`` /
+``move_done_signal`` signals and the ``title``, ``units``, ``initialized_state``, ``move_done_bool`` properties.
+DAQ_Move handles its own hardware thread, everything here runs in the Qt main thread.
+
+Continuous jog (plugins implementing ``jog``, e.g. those of pymodaq_plugins_hhglab): ``ThreadCommand('jog',
+[direction, speed])`` and ``ThreadCommand('jog_alive', [])`` through ``command_hardware`` (PyMoDAQ calls the plugin
+method of that name in the hardware thread), stopped by ``stop_motion``. Whether the plugin implements it is read on the
+plugin instance (read only, see ``plugin_of``).
 """
 from __future__ import annotations
 
@@ -14,6 +19,11 @@ from pymodaq_utils.logger import set_logger, get_module_name
 
 logger = set_logger(get_module_name(__file__))
 
+try:
+    from pymodaq_utils.utils import ThreadCommand
+except ImportError:  # pragma: no cover - older pymodaq_utils
+    from pymodaq.utils.daq_utils import ThreadCommand
+
 
 def data_to_float(data) -> Optional[float]:
     """DataActuator (or number) -> float, None if not convertible"""
@@ -23,6 +33,20 @@ def data_to_float(data) -> Optional[float]:
         return float(data)
     except Exception:
         return None
+
+
+def plugin_of(module):
+    """The plugin instance of a DAQ_Move, living in its hardware thread (read only: capability detection), None if not
+    initialized. PyMoDAQ 5.1: ``_hardware_thread.hardware.hardware``; 5.3: the worker registered in
+    ``controller_and_thread.thread`` (by title), ``.plugin``"""
+    worker = None
+    thread = getattr(getattr(module, 'controller_and_thread', None), 'thread', None)
+    hardwares = getattr(thread, '__dict__', {}).get('_hardwares') if thread is not None else None
+    if isinstance(hardwares, dict):
+        worker = hardwares.get(str(getattr(module, 'title', '')))
+    if worker is None:
+        worker = getattr(getattr(module, '_hardware_thread', None), 'hardware', None)
+    return getattr(worker, 'plugin', None) or getattr(worker, 'hardware', None)
 
 
 class ActuatorPort(ABC):
@@ -52,6 +76,18 @@ class ActuatorPort(ABC):
     @abstractmethod
     def stop(self):
         """Stop the motion"""
+
+    def supports_jog(self) -> bool:
+        """The actuator can move continuously at a given speed (``jog``) until ``stop``"""
+        return False
+
+    def jog(self, direction: int, speed: float):
+        """Start (or change) a continuous move: direction +1 / -1, speed in units / s; its end (``stop``, end of
+        travel...) is signalled through ``on_done``"""
+        raise NotImplementedError(f'{self.name}: no continuous jog')  # noqa: PMQ202 optional capability of a port
+
+    def jog_alive(self):
+        """Keep-alive of a running jog (the plugin stops it when they stop coming)"""
 
     def request_value(self):
         pass
@@ -129,6 +165,18 @@ class DAQMovePort(ActuatorPort):
 
     def stop(self):
         self.module.stop_motion()
+
+    def supports_jog(self) -> bool:
+        try:
+            return self.is_initialized() and callable(getattr(plugin_of(self.module), 'jog', None))
+        except Exception:
+            return False
+
+    def jog(self, direction: int, speed: float):
+        self.module.command_hardware.emit(ThreadCommand('jog', [int(direction), float(speed)]))
+
+    def jog_alive(self):
+        self.module.command_hardware.emit(ThreadCommand('jog_alive', []))
 
     def request_value(self):
         if self.is_initialized():

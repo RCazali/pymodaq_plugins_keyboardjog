@@ -18,6 +18,8 @@ def sample_setup():
                     axes={'Stage X': HORIZONTAL, 'Stage Y': VERTICAL, 'Focus Z': VERTICAL},
                     pair_names={3: 'Sample'}, actuator_names={'Focus Z': 'Focus µ', 'Stage X': 'X'}, extra_keys=[ExtraKeys('Focus Z', 'PgDown', 'PgUp')],
                     steps={'Stage X': 0.001, 'Stage Y': 2.5, 'Focus Z': 1e-5},
+                    slow_speeds={'Stage Y': 0.1}, fast_speeds={'Stage Y': 2.0, 'Focus Z': 1e-3},
+                    inverted=['Focus Z'],
                     all_continuous=True, step_factor=5.0, always_on_top=False, show_history=True, min_interval_ms=120,
                     stop_on_focus_loss=False, move_timeout_s=3.0)
 
@@ -139,3 +141,18 @@ def test_version_2_display_flag_is_converted():
             {'name': 'key_plus', 'type': 'str', 'value': 'End'}]}]}])
     setup = setup_from_parameter(p)
     assert setup.hidden == ['B'] and setup.pair_numbers == {'C': 3}
+
+
+def test_version_3_file_loads_with_default_speeds(tmp_path):
+    """Setups saved before the continuous jog (no slow / fast / invert): default speeds, keys not inverted"""
+    from pymodaq_gui.parameter import Parameter, ioxml
+    param = setup_to_parameter(sample_setup())
+    param.child('version').setValue(3)
+    for group in param.child('actuators').children():
+        for name in ('slow', 'fast', 'invert'):
+            group.removeChild(group.child(name))
+    ioxml.parameter_to_xml_file(param, tmp_path / 'old', overwrite=True)
+    setup = SetupStore(tmp_path).load('old')
+    assert setup.slow_speeds == {} and setup.fast_speeds == {} and setup.inverted == []
+    assert setup.steps == sample_setup().steps
+    assert setup.slow_speed('Stage Y') == 25.0 and setup.fast_speed('Stage Y') == 250.0

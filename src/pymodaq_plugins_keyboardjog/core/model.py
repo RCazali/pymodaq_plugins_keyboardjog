@@ -3,8 +3,9 @@
 Keyboard model:
 
 * every actuator has a few settings of its own: **pair** (``hidden``, ``auto``, 1..9, 0), **keys** (horizontal or
-  vertical), step size, step or continuous motion, and **headless** (its value is not shown: e.g. a picomotor, whose
-  moves are only seen in the history);
+  vertical), **invert** (the - / + keys swapped), step size, step or continuous motion, the slow / fast **speeds** of
+  the continuous motion, and **headless** (its value is not shown: e.g. a picomotor, whose moves are only seen in the
+  history);
 * the actuators sharing a pair number form one numbered **group** (a pair: e.g. the X and Y of a stage). An actuator
   left on ``auto`` is a group of its own and takes the first free number; a ``hidden`` one is not in the window at
   all. The number key (1..9, 0) or a click selects a group; the movement keys (W A S D and / or the arrows) move it:
@@ -32,6 +33,8 @@ GROUP_NUMBERS = tuple(range(1, 11))       # 10 is the '0' key
 PAIR_CHOICES = (HIDDEN, AUTO) + tuple(str(n % 10) for n in GROUP_NUMBERS)
 
 DEFAULT_STEP = 1.0
+DEFAULT_SPEED_STEPS = 10.0      # slow speed of an actuator not configured: 10 steps / s
+FAST_FACTOR = 10.0              # fast speed of an actuator not configured: 10 x the slow one
 
 
 def number_label(number: Optional[int]) -> str:
@@ -67,6 +70,9 @@ class JogSetup:
     headless: List[str] = field(default_factory=list)            # actuators whose value is not shown
     steps: Dict[str, float] = field(default_factory=dict)
     continuous: List[str] = field(default_factory=list)          # actuators in continuous mode
+    slow_speeds: Dict[str, float] = field(default_factory=dict)  # continuous jog speed (units / s)
+    fast_speeds: Dict[str, float] = field(default_factory=dict)  # idem with Shift
+    inverted: List[str] = field(default_factory=list)            # actuators whose - / + keys are swapped
     pair_numbers: Dict[str, int] = field(default_factory=dict)   # actuator -> 1..10 (absent: auto)
     axes: Dict[str, str] = field(default_factory=dict)           # actuator -> horizontal / vertical
     pair_names: Dict[int, str] = field(default_factory=dict)     # group number -> name of the pair
@@ -84,6 +90,17 @@ class JogSetup:
 
     def step(self, actuator: str) -> float:
         return float(self.steps.get(actuator, DEFAULT_STEP))
+
+    def slow_speed(self, actuator: str) -> float:
+        speed = float(self.slow_speeds.get(actuator, 0.0))
+        return speed if speed > 0 else DEFAULT_SPEED_STEPS * self.step(actuator)
+
+    def fast_speed(self, actuator: str) -> float:
+        speed = float(self.fast_speeds.get(actuator, 0.0))
+        return speed if speed > 0 else FAST_FACTOR * self.slow_speed(actuator)
+
+    def is_inverted(self, actuator: str) -> bool:
+        return actuator in self.inverted
 
     def axis(self, actuator: str) -> str:
         axis = self.axes.get(actuator, HORIZONTAL)
@@ -119,7 +136,8 @@ class JogSetup:
         """Every actuator this setup refers to"""
         out = []
         for name in (list(self.hidden) + list(self.pair_numbers) + self.key_bound_actuators() + list(self.headless)
-                     + list(self.continuous) + list(self.axes) + list(self.steps) + list(self.actuator_names)):
+                     + list(self.continuous) + list(self.axes) + list(self.steps) + list(self.actuator_names)
+                     + list(self.slow_speeds) + list(self.fast_speeds) + list(self.inverted)):
             if name not in out:
                 out.append(name)
         return out
@@ -143,6 +161,9 @@ class JogSetup:
                             'headless': [a for a in self.headless if a in present],
                             'steps': keep(self.steps),
                             'continuous': [a for a in self.continuous if a in present],
+                            'slow_speeds': keep(self.slow_speeds),
+                            'fast_speeds': keep(self.fast_speeds),
+                            'inverted': [a for a in self.inverted if a in present],
                             'pair_numbers': keep(self.pair_numbers),
                             'axes': keep(self.axes),
                             'pair_names': dict(self.pair_names),

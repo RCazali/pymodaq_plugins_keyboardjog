@@ -22,8 +22,12 @@ HEADLESS_TIP = ('Its value is not shown (e.g. a picomotor without encoder): its 
                 'its name turns orange while it moves')
 AXIS_TIP = ('horizontal: moved by the left / right keys (A / D or Q / D, arrows). '
             'vertical: moved by the down / up keys (S / W or S / Z, arrows)')
-CONTINUOUS_TIP = ('off: one key press = one step. on: steps repeated while the key is held, each one once the '
-                  'previous move is done (Shift = step x10, Ctrl = step /10 while held)')
+CONTINUOUS_TIP = ('off: one key press = one step. on: the actuator moves while the key is held. With a plugin '
+                  'implementing the continuous jog (pymodaq_plugins_hhglab): at constant speed, the slow speed '
+                  '(Shift: the fast one, Ctrl: slow / 10), stopped at the key release. Otherwise: steps repeated, each '
+                  'one once the previous move is done (Shift = step x10, Ctrl = step /10 while held)')
+SPEED_TIP = 'Speed of the continuous motion (continuous mode, plugins with a continuous jog only)'
+INVERT_TIP = 'The - / + keys of this actuator are swapped (A moves +, D moves -; S moves +, W moves -)'
 
 GENERAL_NAMES = ('all_continuous', 'move_keys', 'step_factor', 'always_on_top', 'show_history', 'show_keys',
                  'min_interval_ms', 'stop_on_focus_loss', 'move_timeout_s')
@@ -90,6 +94,12 @@ def fill_actuators(settings: Parameter, names: Sequence[str], units: Dict[str, s
              'suffix': units.get(name, ''), 'decimals': 6},
             {'title': 'Continuous:', 'name': 'continuous', 'type': 'bool', 'value': name in setup.continuous,
              'tip': CONTINUOUS_TIP + ' (Motion > All continuous overrides it)'},
+            {'title': 'Slow speed:', 'name': 'slow', 'type': 'float', 'value': setup.slow_speed(name), 'min': 1e-12,
+             'suffix': f"{units.get(name, '')}/s", 'decimals': 6, 'tip': SPEED_TIP},
+            {'title': 'Fast speed (Shift):', 'name': 'fast', 'type': 'float', 'value': setup.fast_speed(name),
+             'min': 1e-12, 'suffix': f"{units.get(name, '')}/s", 'decimals': 6, 'tip': SPEED_TIP},
+            {'title': 'Invert keys:', 'name': 'invert', 'type': 'bool', 'value': setup.is_inverted(name),
+             'tip': INVERT_TIP},
             {'title': 'Headless:', 'name': 'headless', 'type': 'bool', 'value': setup.is_headless(name),
              'tip': HEADLESS_TIP},
         ]})
@@ -171,6 +181,10 @@ def read_setup(settings: Parameter) -> JogSetup:
         if group.child('headless').value():
             setup.headless.append(name)
         setup.steps[name] = float(group.child('step').value())
+        setup.slow_speeds[name] = float(group.child('slow').value())
+        setup.fast_speeds[name] = float(group.child('fast').value())
+        if group.child('invert').value():
+            setup.inverted.append(name)
         pair = group.child('pair').value()
         number = number_of(pair)
         if number is not None:

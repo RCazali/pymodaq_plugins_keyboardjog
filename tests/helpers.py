@@ -106,6 +106,40 @@ class FakePort(ActuatorPort):
                 self.on_value(self.position)
 
 
+class FakeJogPort(FakePort):
+    """An actuator whose plugin implements the continuous jog; the move-done of a stop comes when the test calls
+    finish_jog()"""
+
+    def __init__(self, name, units='mm'):
+        super().__init__(name, units)
+        self.jogs = []
+        self.alive = 0
+        self.jog_supported = True
+        self.jogging = False
+
+    def supports_jog(self):
+        return self.jog_supported
+
+    def jog(self, direction, speed):
+        self.jogs.append((direction, speed))
+        self.jogging = True
+
+    def jog_alive(self):
+        self.alive += 1
+
+    def stop(self):
+        self.stops += 1
+        self.jogging = False
+
+    def finish_jog(self, position=None):
+        """The plugin signals the end of the jog (after a stop, or by itself)"""
+        self.jogging = False
+        if position is not None:
+            self.position = position
+        if self.on_done is not None:
+            self.on_done(self.position)
+
+
 def find_param(root, name):
     for c in root.children():
         if c.name() == name:

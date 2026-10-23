@@ -461,7 +461,13 @@ def test_right_click_menu(jog):
     configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
     menu = ext.group_menu(0)                             # right-click menu of a single actuator
     assert [a.text() for a in menu.actions()] == ['Number', "Rename 'Stage X'…", "Pair 'Stage X' with", 'Keys',
-                                                  'Continuous', 'Headless (no value shown)', 'Hide']
+                                                  'Invert keys', 'Continuous', 'Headless (no value shown)', 'Hide']
+    menu_action(menu, 'Invert keys').trigger()
+    assert ext.controller.inverted == {'Stage X'}
+    assert actuator_group(ext.settings, 'Stage X').child('invert').value() is True
+    menu_action(ext.group_menu(0), 'Invert keys').trigger()
+    assert ext.controller.inverted == frozenset()
+    menu = ext.group_menu(0)
     assert [a.text() for a in menu.actions()[2].menu().actions()] == ['Stage Y', 'Focus Z']
     number = menu.actions()[0].menu()
     assert [a.text() for a in number.actions() if a.isChecked()] == ['auto']

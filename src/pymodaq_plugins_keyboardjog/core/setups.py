@@ -4,7 +4,8 @@ One file per setup in ``<PyMoDAQ local folder>/KeyboardJog/setups`` (configurabl
 name of the last used setup is kept in ``last_setup.txt`` of the same folder. Reading is tolerant: a missing or
 malformed entry takes its default value, so that old or hand-edited files still load. The older setups are
 converted: version 1 (pairs as bindings, one motion mode for all) and versions 1-2 (a *display* flag instead of the
-*hidden* pair choice).
+*hidden* pair choice). Version 4 adds the slow / fast speeds of the continuous jog and the inverted keys (absent from
+the older files: default speeds, keys not inverted).
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from .model import AXES, GROUP_NUMBERS, HORIZONTAL, VERTICAL, ExtraKeys, JogSetu
 
 logger = set_logger(get_module_name(__file__))
 
-SETUP_VERSION = 3
+SETUP_VERSION = 4
 LAST_SETUP_FILE = 'last_setup.txt'
 EXTENSION_FOLDER = 'KeyboardJog'  # same name as CustomApp.get_local_folder() of PyMoDAQ >= 5.3
 
@@ -54,6 +55,9 @@ def setup_to_parameter(setup: JogSetup) -> Parameter:
             {'name': 'headless', 'type': 'bool', 'value': setup.is_headless(name)},
             {'name': 'continuous', 'type': 'bool', 'value': name in setup.continuous},
             {'name': 'step', 'type': 'float', 'value': float(setup.steps.get(name, 0.0))},   # 0: default
+            {'name': 'slow', 'type': 'float', 'value': float(setup.slow_speeds.get(name, 0.0))},   # 0: default
+            {'name': 'fast', 'type': 'float', 'value': float(setup.fast_speeds.get(name, 0.0))},   # 0: default
+            {'name': 'invert', 'type': 'bool', 'value': setup.is_inverted(name)},
             {'name': 'pair', 'type': 'int', 'value': setup.number(name) or 0},              # 0: auto
             {'name': 'axis', 'type': 'str', 'value': setup.axes.get(name, '')},
             {'name': 'label', 'type': 'str', 'value': setup.actuator_names.get(name, '')}]})       # '': not renamed
@@ -130,6 +134,12 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
         step = _value(group, 'step', 0.0)
         if step > 0:
             setup.steps[name] = step
+        for key, speeds in (('slow', setup.slow_speeds), ('fast', setup.fast_speeds)):
+            speed = _value(group, key, 0.0)
+            if speed > 0:
+                speeds[name] = speed
+        if _value(group, 'invert', False):
+            setup.inverted.append(name)
         number = _value(group, 'pair', 0)
         if number in GROUP_NUMBERS:
             setup.pair_numbers[name] = number
@@ -197,6 +207,9 @@ def setup_to_dict(setup: JogSetup) -> dict:
             'general': {name: getattr(setup, name) for name, _ in _GENERAL},
             'hidden': list(setup.hidden), 'headless': list(setup.headless), 'continuous': list(setup.continuous),
             'steps': {k: float(v) for k, v in setup.steps.items()},
+            'slow_speeds': {k: float(v) for k, v in setup.slow_speeds.items()},
+            'fast_speeds': {k: float(v) for k, v in setup.fast_speeds.items()},
+            'inverted': list(setup.inverted),
             'pair_numbers': {k: int(v) for k, v in setup.pair_numbers.items()},
             'axes': dict(setup.axes),
             'pair_names': {str(k): v for k, v in setup.pair_names.items() if v},
@@ -232,12 +245,15 @@ def setup_from_dict(data: dict) -> JogSetup:
         return items if isinstance(items, dict) else {}
 
     setup.hidden, setup.headless, setup.continuous = names('hidden'), names('headless'), names('continuous')
-    for name, step in mapping('steps').items():
-        try:
-            if float(step) > 0:
-                setup.steps[str(name)] = float(step)
-        except (TypeError, ValueError):
-            pass
+    for key, values in (('steps', setup.steps), ('slow_speeds', setup.slow_speeds),
+                        ('fast_speeds', setup.fast_speeds)):
+        for name, value in mapping(key).items():
+            try:
+                if float(value) > 0:
+                    values[str(name)] = float(value)
+            except (TypeError, ValueError):
+                pass
+    setup.inverted = names('inverted')
     for name, number in mapping('pair_numbers').items():
         try:
             if int(number) in GROUP_NUMBERS:
