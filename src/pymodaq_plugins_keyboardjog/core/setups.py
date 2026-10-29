@@ -5,7 +5,8 @@ name of the last used setup is kept in ``last_setup.txt`` of the same folder. Re
 malformed entry takes its default value, so that old or hand-edited files still load. The older setups are
 converted: version 1 (pairs as bindings, one motion mode for all) and versions 1-2 (a *display* flag instead of the
 *hidden* pair choice). Version 4 adds the slow / fast speeds of the continuous jog and the inverted keys (absent from
-the older files: default speeds, keys not inverted).
+the older files: default speeds, keys not inverted). Version 5 adds the digits shown per actuator (absent: automatic),
+the tooltips mode and the groups 11 and 12.
 """
 from __future__ import annotations
 
@@ -17,16 +18,16 @@ from pymodaq_gui.parameter import Parameter, ioxml
 from pymodaq_utils.logger import set_logger, get_module_name
 
 from .keys import MOVE_KEY_SETS
-from .model import AXES, GROUP_NUMBERS, HORIZONTAL, VERTICAL, ExtraKeys, JogSetup
+from .model import AXES, DECIMALS_CHOICES, GROUP_NUMBERS, HORIZONTAL, TIPS_MODES, VERTICAL, ExtraKeys, JogSetup
 
 logger = set_logger(get_module_name(__file__))
 
-SETUP_VERSION = 4
+SETUP_VERSION = 5
 LAST_SETUP_FILE = 'last_setup.txt'
 EXTENSION_FOLDER = 'KeyboardJog'  # same name as CustomApp.get_local_folder() of PyMoDAQ >= 5.3
 
 _GENERAL = (('all_continuous', 'bool'), ('move_keys', 'str'), ('step_factor', 'float'), ('always_on_top', 'bool'), ('show_history', 'bool'), ('show_keys', 'bool'),
-            ('min_interval_ms', 'int'), ('stop_on_focus_loss', 'bool'), ('move_timeout_s', 'float'))
+            ('min_interval_ms', 'int'), ('stop_on_focus_loss', 'bool'), ('move_timeout_s', 'float'), ('tips', 'str'))
 
 
 def default_folder(config=None) -> Path:
@@ -58,6 +59,7 @@ def setup_to_parameter(setup: JogSetup) -> Parameter:
             {'name': 'slow', 'type': 'float', 'value': float(setup.slow_speeds.get(name, 0.0))},   # 0: default
             {'name': 'fast', 'type': 'float', 'value': float(setup.fast_speeds.get(name, 0.0))},   # 0: default
             {'name': 'invert', 'type': 'bool', 'value': setup.is_inverted(name)},
+            {'name': 'digits', 'type': 'int', 'value': _digits(setup, name)},                  # -1: auto
             {'name': 'pair', 'type': 'int', 'value': setup.number(name) or 0},              # 0: auto
             {'name': 'axis', 'type': 'str', 'value': setup.axes.get(name, '')},
             {'name': 'label', 'type': 'str', 'value': setup.actuator_names.get(name, '')}]})       # '': not renamed
@@ -77,6 +79,20 @@ def setup_to_parameter(setup: JogSetup) -> Parameter:
         {'name': 'pair_names', 'type': 'group', 'children': names},
         {'name': 'extra_keys', 'type': 'group', 'children': extra},
     ])
+
+
+def _digits(setup: JogSetup, name: str) -> int:
+    value = setup.value_decimals(name)
+    return -1 if value is None else value
+
+
+def _check_general(values: dict, defaults: JogSetup):
+    if values['move_keys'] not in MOVE_KEY_SETS:
+        values['move_keys'] = defaults.move_keys
+    if values['step_factor'] <= 1:
+        values['step_factor'] = defaults.step_factor
+    if values['tips'] not in TIPS_MODES:
+        values['tips'] = defaults.tips
 
 
 def _child(param: Optional[Parameter], name: str) -> Optional[Parameter]:
@@ -110,10 +126,7 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
     defaults = JogSetup()
     general = _child(param, 'general')
     values = {name: _value(general, name, getattr(defaults, name)) for name, _ in _GENERAL}
-    if values['move_keys'] not in MOVE_KEY_SETS:
-        values['move_keys'] = defaults.move_keys
-    if values['step_factor'] <= 1:
-        values['step_factor'] = defaults.step_factor
+    _check_general(values, defaults)
     setup = JogSetup(**values)
     if _child(param, 'actuators') is None and _child(param, 'bindings') is not None:
         _read_version_1(param, setup)
@@ -140,6 +153,9 @@ def setup_from_parameter(param: Parameter) -> JogSetup:
                 speeds[name] = speed
         if _value(group, 'invert', False):
             setup.inverted.append(name)
+        digits = _value(group, 'digits', -1)
+        if digits in DECIMALS_CHOICES:
+            setup.decimals[name] = digits
         number = _value(group, 'pair', 0)
         if number in GROUP_NUMBERS:
             setup.pair_numbers[name] = number
@@ -210,6 +226,7 @@ def setup_to_dict(setup: JogSetup) -> dict:
             'slow_speeds': {k: float(v) for k, v in setup.slow_speeds.items()},
             'fast_speeds': {k: float(v) for k, v in setup.fast_speeds.items()},
             'inverted': list(setup.inverted),
+            'decimals': {k: int(v) for k, v in setup.decimals.items() if v in DECIMALS_CHOICES},
             'pair_numbers': {k: int(v) for k, v in setup.pair_numbers.items()},
             'axes': dict(setup.axes),
             'pair_names': {str(k): v for k, v in setup.pair_names.items() if v},
@@ -230,10 +247,7 @@ def setup_from_dict(data: dict) -> JogSetup:
             values[name] = type(default)(general.get(name, default))
         except (TypeError, ValueError):
             values[name] = default
-    if values['move_keys'] not in MOVE_KEY_SETS:
-        values['move_keys'] = defaults.move_keys
-    if values['step_factor'] <= 1:
-        values['step_factor'] = defaults.step_factor
+    _check_general(values, defaults)
     setup = JogSetup(**values)
 
     def names(key) -> List[str]:
@@ -254,6 +268,12 @@ def setup_from_dict(data: dict) -> JogSetup:
             except (TypeError, ValueError):
                 pass
     setup.inverted = names('inverted')
+    for name, value in mapping('decimals').items():
+        try:
+            if int(value) in DECIMALS_CHOICES:
+                setup.decimals[str(name)] = int(value)
+        except (TypeError, ValueError):
+            pass
     for name, number in mapping('pair_numbers').items():
         try:
             if int(number) in GROUP_NUMBERS:

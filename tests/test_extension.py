@@ -1,8 +1,8 @@
 """The extension with real DAQ_Move modules (Mock actuators of pymodaq_plugins_mock, no hardware).
 
 Covers the checklist of the specification: focus green / red, no motion when red, step mode one press = one step,
-continuous mode stops on release, focus loss while a key is held, no move queueing with a slow actuator, +/- step
-changes, Shift / Ctrl in continuous mode, setup save / load / delete, setup with a missing actuator, last setup
+continuous mode stops on release, focus loss while a key is held, no move queueing with a slow actuator, Shift / Ctrl
+in step and continuous mode, digits, tooltips, double press, setup save / load / delete, setup with a missing actuator, last setup
 reloaded at startup, always on top; and the per-actuator settings (pair number, keys, continuous) and the history.
 """
 import pytest
@@ -305,8 +305,13 @@ def test_pressed_keys_display(jog):
     assert ext.panel.key_toast.isVisible()
     assert ext.panel.key_toast.plain_text() == 'D Stage X +0.01 mm'
     idle(ext, spies)
-    tap(ext, Qt.Key_Plus)
-    assert ext.panel.key_toast.plain_text().endswith('step ×10 → 0.1 mm, 0.2 mm')
+    press(ext, Qt.Key_Shift, Qt.ShiftModifier)
+    assert ext.panel.key_toast.plain_text() == 'Shift step ×10 while held'
+    QtWidgets.QApplication.sendEvent(ext.panel, key_event('press', Qt.Key_D, Qt.ShiftModifier, text='D'))
+    QtWidgets.QApplication.sendEvent(ext.panel, key_event('release', Qt.Key_D, Qt.ShiftModifier, text='D'))
+    release(ext, Qt.Key_Shift)
+    assert ext.panel.key_toast.plain_text() == 'Shift+D Stage X +0.1 mm'
+    idle(ext, spies)
     tap(ext, Qt.Key_2)
     assert ext.panel.key_toast.plain_text().endswith('select Focus Z')
     assert wait(lambda: not ext.panel.key_toast.isVisible(), 3)        # hidden after a moment
@@ -349,7 +354,7 @@ def test_shift_and_ctrl_in_continuous_mode(jog):
     ext, spies = jog
     continuous(ext)
     press(ext, Qt.Key_Shift, Qt.ShiftModifier)
-    assert ext.panel.mode_label.text() == 'step x10'
+    assert ext.panel.mode_label.text() == 'step ×10'
     press(ext, Qt.Key_D, Qt.ShiftModifier)
     assert wait(lambda: len(spies['Stage X'].moves) >= 2, 5)
     release(ext, Qt.Key_D, Qt.ShiftModifier)
@@ -370,27 +375,75 @@ def test_shift_and_ctrl_in_continuous_mode(jog):
 
 
 # ---------------------------------------------------------------------------------------------- step size
-def test_plus_minus_change_the_steps_of_the_selection(jog):
+def test_shift_and_ctrl_scale_the_steps_in_step_mode(jog):
+    """Shift / Ctrl replaced the + / - keys: the step is scaled while they are held, the stored step is kept"""
     ext, spies = jog
-    tap(ext, Qt.Key_Plus)
-    assert ext.controller.step('Stage X') == pytest.approx(0.1)
-    assert ext.controller.step('Stage Y') == pytest.approx(0.2)
-    assert ext.controller.step('Focus Z') == pytest.approx(0.005)     # not selected: unchanged
-    assert ext.panel.detail_text() == 'A/D step 0.1 mm   S/W step 0.2 mm'
-    assert actuator_group(ext.settings, 'Stage X').child('step').value() == pytest.approx(0.1)
-    tap(ext, Qt.Key_Minus)
-    tap(ext, Qt.Key_Minus)
-    assert ext.controller.step('Stage Y') == pytest.approx(0.002)
-    tap(ext, Qt.Key_2)
-    tap(ext, Qt.Key_Plus)
-    assert ext.controller.step('Focus Z') == pytest.approx(0.05)
-    tap(ext, Qt.Key_1)
+    press(ext, Qt.Key_Shift, Qt.ShiftModifier)
+    assert ext.panel.mode_label.text() == 'step ×10'
+    tap(ext, Qt.Key_D, Qt.ShiftModifier)
+    release(ext, Qt.Key_Shift)
+    idle(ext, spies)
+    press(ext, Qt.Key_Control, Qt.ControlModifier)
+    tap(ext, Qt.Key_D, Qt.ControlModifier)
+    release(ext, Qt.Key_Control)
+    idle(ext, spies)
+    ext.settings.child('general', 'step_factor').setValue(2.0)       # custom factor
+    press(ext, Qt.Key_Shift, Qt.ShiftModifier)
+    tap(ext, Qt.Key_D, Qt.ShiftModifier)
+    release(ext, Qt.Key_Shift)
+    idle(ext, spies)
     tap(ext, Qt.Key_D)
     idle(ext, spies)
-    assert spies['Stage X'].moves == [pytest.approx(0.001)]
-    ext.settings.child('general', 'step_factor').setValue(2.0)       # custom factor
-    tap(ext, Qt.Key_Plus)
-    assert ext.controller.step('Stage X') == pytest.approx(0.002)
+    assert spies['Stage X'].moves == pytest.approx([0.1, 0.001, 0.02, 0.01])
+    assert ext.controller.step('Stage X') == pytest.approx(0.01)
+    tap(ext, Qt.Key_Minus)                               # the former step keys: groups 11 and 12, absent here
+    assert ext.controller.step('Stage X') == pytest.approx(0.01)
+    assert '-' in ext.panel.message_label.text()
+
+
+def test_digits_of_an_actuator(jog):
+    ext, spies = jog
+    ext.values['Stage X'] = 1.23456789
+    ext.panel.set_value('Stage X', 1.23456789)
+    assert ext.panel.value_text('Stage X') == '1.2346'          # auto: two more digits than the step 0.01
+    menu_action(ext.group_menu(0), 'Stage X', 'Digits', '6').trigger()
+    assert ext.setup.decimals == {'Stage X': 6}
+    assert ext.panel.value_text('Stage X') == '1.234568'
+    assert actuator_group(ext.settings, 'Stage X').child('digits').value() == '6'
+    assert ext.decimals('Stage X') == 6 and ext.decimals('Stage Y') == 4
+    name = ext.save_setup('digits_test')
+    assert ext.store.load(name).decimals == {'Stage X': 6}
+    menu_action(ext.group_menu(0), 'Stage X', 'Digits', 'auto (4)').trigger()
+    assert ext.setup.decimals == {} and ext.panel.value_text('Stage X') == '1.2346'
+
+
+def test_short_tooltips_and_help_menu(jog):
+    ext, spies = jog
+    panel = ext.panel
+    assert not panel.toolTip()                           # no help over the whole window any more
+    tips = [panel.close_button.toolTip(), panel.history_button.toolTip(), panel._lines[0].name.toolTip()]
+    assert all('\n' not in t and t.endswith('(?: shorter tips)') for t in tips)
+    assert all(len(t.replace('  (?: shorter tips)', '').split()) <= 15 for t in tips)
+    menu = panel.help_menu()
+    menu_action(menu, 'Tooltips: concise').trigger()
+    assert ext.setup.tips == 'concise' and ext.settings['general', 'tips'] == 'concise'
+    assert panel.close_button.toolTip() == 'Close' and panel._lines[0].name.toolTip() == 'Right-click: options'
+    assert 'Shift' in panel.help_text and 'two keys right of 0' in panel.help_text
+    menu_action(panel.help_menu(), 'Tooltips: verbose').trigger()
+    assert panel.close_button.toolTip().endswith('(?: shorter tips)')
+
+
+def test_double_press_hook(jog, monkeypatch):
+    ext, spies = jog
+    calls = []
+    monkeypatch.setattr(ext, 'on_group_double_press', lambda index: calls.append(index))
+    ext.select_number(2, now=100.0)
+    ext.select_number(2, now=100.3)                      # twice quickly: the hook
+    ext.select_number(2, now=100.5)                      # a third press starts again
+    ext.select_number(2, now=101.5)                      # too slow
+    ext.select_number(1, now=101.6)
+    ext.select_number(2, now=101.7)                      # another key in between
+    assert calls == [1]
 
 
 # ---------------------------------------------------------------------------------------------- selection and pairs
@@ -461,7 +514,8 @@ def test_right_click_menu(jog):
     configure(ext, JogSetup(steps={n: 0.01 for n in NAMES}))
     menu = ext.group_menu(0)                             # right-click menu of a single actuator
     assert [a.text() for a in menu.actions()] == ['Number', "Rename 'Stage X'…", "Pair 'Stage X' with", 'Keys',
-                                                  'Invert keys', 'Continuous', 'Headless (no value shown)', 'Hide']
+                                                  'Invert keys', 'Continuous', 'Headless (no value shown)', 'Digits',
+                                                  'Hide']
     menu_action(menu, 'Invert keys').trigger()
     assert ext.controller.inverted == {'Stage X'}
     assert actuator_group(ext.settings, 'Stage X').child('invert').value() is True

@@ -14,12 +14,12 @@ def _qt():
 
 def sample_setup():
     return JogSetup(hidden=['Rotation µ'], headless=['Stage X'], continuous=['Stage Y'],
-                    pair_numbers={'Stage X': 3, 'Stage Y': 3, 'Focus Z': 10},
+                    pair_numbers={'Stage X': 3, 'Stage Y': 3, 'Focus Z': 12},
                     axes={'Stage X': HORIZONTAL, 'Stage Y': VERTICAL, 'Focus Z': VERTICAL},
                     pair_names={3: 'Sample'}, actuator_names={'Focus Z': 'Focus µ', 'Stage X': 'X'}, extra_keys=[ExtraKeys('Focus Z', 'PgDown', 'PgUp')],
                     steps={'Stage X': 0.001, 'Stage Y': 2.5, 'Focus Z': 1e-5},
                     slow_speeds={'Stage Y': 0.1}, fast_speeds={'Stage Y': 2.0, 'Focus Z': 1e-3},
-                    inverted=['Focus Z'],
+                    inverted=['Focus Z'], decimals={'Stage X': 6, 'Focus Z': 0}, tips='concise',
                     all_continuous=True, step_factor=5.0, always_on_top=False, show_history=True, min_interval_ms=120,
                     stop_on_focus_loss=False, move_timeout_s=3.0)
 
@@ -39,6 +39,8 @@ def test_dict_round_trip():
                               'pair_numbers': {'A': 42, 'B': 2}, 'axes': {'A': 'diagonal'}, 'extra_keys': ['x']})
     assert broken.step_factor == 10.0 and broken.move_keys == JogSetup().move_keys
     assert broken.steps == {} and broken.pair_numbers == {'B': 2} and broken.axes == {} and broken.extra_keys == []
+    broken = setup_from_dict({'general': {'tips': 'chatty'}, 'decimals': {'A': 42, 'B': 'x', 'C': 3}})
+    assert broken.tips == 'verbose' and broken.decimals == {'C': 3}
 
 
 def test_store_save_load_delete(tmp_path):

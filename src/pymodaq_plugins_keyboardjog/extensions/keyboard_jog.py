@@ -5,17 +5,20 @@ the keyboard while showing their position. Works without any configuration:
 
 * Green border: the window has the keyboard focus, the keys move the actuators.
   Red border: the focus is elsewhere, every key is ignored (and the actuators it was moving are stopped).
-* Every actuator has a number: keys 1..9, 0 (or a click on its line) select it, the movement keys (W A S D by
-  their position, or the arrows) move the selection. Each actuator has its settings (also in the right-click menu):
-  pair (hidden, auto, 1..9, 0), keys (horizontal: A / D, vertical: S / W), invert keys, step, continuous, slow / fast
-  speeds, headless (no value shown, e.g. a picomotor). Two actuators with the same pair number are selected and moved together (e.g. the X and
+* Every actuator has a number: keys 1..9, 0 and the two keys right of 0 (groups 11, 12), or a click on its line,
+  select it, the movement keys (W A S D by their position, or the arrows) move the selection. Each actuator has its settings (also in the right-click menu):
+  pair (hidden, auto, 1..9, 0, 11, 12), keys (horizontal: A / D, vertical: S / W), invert keys, step, continuous,
+  slow / fast speeds, digits shown, headless (no value shown, e.g. a picomotor). Two actuators with the same pair number are selected and moved together (e.g. the X and
   Y of a stage), on one line. An actuator can also get extra keys of its own (e.g. PgDown / PgUp), active whatever
   the selection.
 * Step mode (default): one key press = one relative step. Continuous mode: the actuator moves while the key is held.
   With a plugin implementing the continuous jog (pymodaq_plugins_hhglab), at constant speed as the lab's old alignment
   GUI: the slow speed, the fast one with Shift (slow / 10 with Ctrl), stopped at the key release. Otherwise steps
-  repeated, each one after the previous move is done (never queued); Shift = step x10, Ctrl = step /10 while held.
-* ``+`` / ``-``: multiply / divide the step of the selection by the step factor (10 by default).
+  repeated, each one after the previous move is done (never queued).
+* Shift / Ctrl held: the step is multiplied / divided by the step factor (10 by default), in both modes.
+* A group number pressed twice quickly and Enter call hooks (``on_group_double_press``, ``on_enter``) that an
+  embedding application may implement (Laser Control: start / stop a PID, "stabilize here").
+* Tooltips are one line, verbose or concise (menu of the ? button, which also opens the full help).
 * The graph button shows the history of the moves of the selected group (end-of-move points, click one to go back
   there), hidden by default. The pin button saves the current position of the selected group under a name ("HA")
   and goes back to a saved one; the saved positions are also stars on the history.
@@ -43,17 +46,20 @@ from pymodaq_plugins_keyboardjog.core.controller import MotionController
 from pymodaq_plugins_keyboardjog.core.history import HISTORY_FILE, MoveHistory
 from pymodaq_plugins_keyboardjog.core.input import KeyboardInput
 from pymodaq_plugins_keyboardjog.core.log_encoding import ensure_utf8_log_files
-from pymodaq_plugins_keyboardjog.core.keys import (DOWN, LEFT, RIGHT, UP, is_azerty, key_label, key_name,
-                                                    movement_labels, movement_reserved_keys, normalize_key_name)
-from pymodaq_plugins_keyboardjog.core.model import (AUTO, GROUP_NUMBERS, HIDDEN, HORIZONTAL, PAIR_CHOICES, VERTICAL,
-                                                     ExtraKeys, Group, JogSetup, build_groups, build_keymap,
-                                                     complete_pair_axes, direction_map, number_label)
+from pymodaq_plugins_keyboardjog.core.keys import (DOWN, LEFT, RIGHT, UP, group_key_labels, is_azerty, key_label,
+                                                    key_name, movement_labels, movement_reserved_keys,
+                                                    normalize_key_name)
+from pymodaq_plugins_keyboardjog.core.model import (AUTO, DECIMALS_CHOICES, GROUP_NUMBERS, HIDDEN, HORIZONTAL,
+                                                     VERTICAL, ExtraKeys, Group, JogSetup, build_groups, build_keymap,
+                                                     complete_pair_axes, direction_map, number_label, pair_choices,
+                                                     set_group_key_labels)
 from pymodaq_plugins_keyboardjog.core.ports import ActuatorPort, actuator_modules, make_ports
 from pymodaq_plugins_keyboardjog.core.positions import POSITIONS_FILE, PositionStore
 from pymodaq_plugins_keyboardjog.core.setups import SetupStore, clean_name, default_folder
 from pymodaq_plugins_keyboardjog.ui import settings as ui_settings
 from pymodaq_plugins_keyboardjog.ui.history_plot import HistoryPlot
-from pymodaq_plugins_keyboardjog.ui.panel import DetailItem, GroupRow, JogPanel, group_color, value_decimals
+from pymodaq_plugins_keyboardjog.ui.panel import (DetailItem, GroupRow, JogPanel, group_color, hint_text,
+                                                  value_decimals)
 
 logger = set_logger(get_module_name(__file__))
 plugin_config = PluginConfig()
@@ -63,14 +69,7 @@ CLASS_NAME = 'KeyboardJog'
 
 Qt = QtCore.Qt
 
-HELP = ('Click this window: green border = the keys move the actuators, red = keys ignored.\n'
-        '1-9, 0 or a click on a row: select an actuator (or a pair). W A S D (or the arrows, see the settings): move\n'
-        'the selection (A/D the horizontal actuator, S/W the vertical one).\n'
-        'Right-click a line: number, rename, pair, keys, continuous, headless, hide. Settings: extra keys, setups.\n'
-        '+ / - : multiply / divide the step (or the speeds) of the selection.\n'
-        'Continuous mode: moves while the key is held; Shift = fast speed (or step x10), Ctrl = slow / 10.\n'
-        'Graph button: history of the moves of the selection (click a point to go back there).\n'
-        'Pin button: save the position of the selection under a name, go back to a saved position.')
+DOUBLE_PRESS_S = 0.45        # the same group key pressed twice within this time: on_group_double_press
 
 COMPACT_SIZE = QtCore.QSize(330, 120)
 SETTINGS_SIZE = QtCore.QSize(420, 640)
@@ -116,10 +115,11 @@ class KeyboardJog(CustomExt):
         self.selected = 0                       # index of the selected group
         self._extra_labels: Dict[str, List[str]] = {}
         self._azerty = is_azerty()              # labels of the WASD keys only (they are matched by position)
+        set_group_key_labels(group_key_labels(self._azerty))
+        self._last_select = (None, float('-inf'))   # (group number, time) of the last group key
         self._labels = movement_labels(self.setup.move_keys, self._azerty)
         self._dirty = False
         self.panel = JogPanel(self.keyboard)
-        self.panel.setToolTip(HELP)
         self.history_plot = HistoryPlot()
         self.panel.set_history_widget(self.history_plot)
         self._message_timer = QtCore.QTimer(self)
@@ -177,12 +177,12 @@ class KeyboardJog(CustomExt):
         self.panel.history_toggled.connect(self._on_history_toggled)
         self.panel.always_on_top_toggled.connect(self._on_top_checkbox)
         self.panel.close_requested.connect(self.quit_fun)
-        self.keyboard.step_scale_requested.connect(self.scale_steps)
         self.keyboard.select_requested.connect(self.select_number)
+        self.keyboard.enter_pressed.connect(lambda: self.on_enter(self.selected))
+        self.panel.tips_mode_changed.connect(self._on_tips_mode)
         self.keyboard.multiplier_changed.connect(self._on_multiplier)
         # pressed keys display: connected after the slots doing the job, so that it describes the result
         self.keyboard.move_pressed.connect(self._show_move_key)
-        self.keyboard.step_scale_requested.connect(self._show_step_key)
         self.keyboard.select_requested.connect(self._show_select_key)
         self.keyboard.multiplier_changed.connect(self._show_modifier_key)
         self.panel.group_clicked.connect(self.select_group)
@@ -324,6 +324,7 @@ class KeyboardJog(CustomExt):
         self.setup = setup
         self.controller.continuous = [n for n in self.ports if setup.is_continuous(n)]
         self.controller.min_interval_s = setup.min_interval_ms / 1000
+        self.controller.step_factor = setup.step_factor
         self.controller.move_timeout_s = setup.move_timeout_s
         for name in self.ports:
             self.controller.steps[name] = setup.step(name)
@@ -349,14 +350,17 @@ class KeyboardJog(CustomExt):
         for name in self.ports:
             self.panel.set_value(name, self.values.get(name))
             self.panel.set_step(name, self.controller.step(name))
+            self.panel.set_decimals(name, setup.value_decimals(name))
         self.panel.set_rows([GroupRow(index, group.label, group.title, group.horizontal, group.vertical,
                                       {a: units.get(a, '') for a in group.actuators},
-                                      {a for a in group.actuators if setup.is_headless(a)}, self._line_tooltip(group),
+                                      {a for a in group.actuators if setup.is_headless(a)}, '',
                                       self.group_color(index))
                              for index, group in enumerate(self.groups)])
         for name in self.ports:
             self.panel.set_busy(name, self.controller.is_busy(name))
         self.panel.set_hint(' '.join(self._labels[d] for d in (UP, LEFT, DOWN, RIGHT)))
+        self.panel.help_text = self.help_text()
+        self.panel.set_tips_mode(setup.tips)
         self.selected = next((i for i, g in enumerate(self.groups)
                               if any(a in selected_before for a in g.actuators)), 0)
         self._apply_selection()
@@ -400,13 +404,35 @@ class KeyboardJog(CustomExt):
         else:
             self._update_detail()
 
-    def select_number(self, number: int):
-        """Select the group of this number (key 1..9, 10 for the 0 key)"""
+    def select_number(self, number: int, now: Optional[float] = None):
+        """Select the group of this number (key 1..9, 10 for the 0 key, 11 and 12 for the keys right of 0). Pressed
+        twice quickly: ``on_group_double_press`` too"""
+        now = time.monotonic() if now is None else now
+        last_number, last_time = self._last_select
+        double = last_number == number and now - last_time <= DOUBLE_PRESS_S
+        self._last_select = (None, float('-inf')) if double else (number, now)   # a third press starts again
         for index, group in enumerate(self.groups):
             if group.number == number:
                 self.select_group(index)
+                if double:
+                    self.on_group_double_press(index)
                 return
         self.show_message(f'No actuator number {number_label(number)}')
+
+    # hooks of the keys without a meaning of their own here (Laser Control: PID start / stop, stabilize here)
+    def on_group_double_press(self, index: int):
+        """The key of the group ``index`` was pressed twice quickly (the second press also reset its Δ)"""
+
+    def on_enter(self, index: int):
+        """Enter pressed with the group ``index`` selected (only when ``keyboard.enter_enabled``)"""
+
+    def help_text(self) -> str:
+        """Full help of the ? button"""
+        return hint_text(' '.join(self._labels[d] for d in (UP, LEFT, DOWN, RIGHT)))
+
+    def _on_tips_mode(self, mode: str):
+        if self.settings['general', 'tips'] != mode:
+            self.settings.child('general', 'tips').setValue(mode)     # value_changed applies and marks it
 
     def select_actuator(self, name: str):
         for index, group in enumerate(self.groups):
@@ -441,8 +467,7 @@ class KeyboardJog(CustomExt):
             return ''
         reference = self._delta_ref.setdefault(name, value)
         delta = value - reference
-        decimals = step_decimals(self.controller.step(name))
-        text = f'{delta:+.{decimals}f}'
+        text = f'{delta:+.{self.decimals(name)}f}'
         return '' if float(text) == 0 else f'Δ {text}'
 
     def _speeds_text(self, name: str) -> str:
@@ -473,21 +498,10 @@ class KeyboardJog(CustomExt):
         names = group.moved + [a for a in group.actuators if a not in group.moved and a in self._extra_labels]
         self.panel.set_detail([self._actuator_detail(group, a) for a in names])
 
-    def _line_tooltip(self, group: Group) -> str:
-        lines = []
-        for name in group.actuators:
-            role = ('horizontal' if name == group.horizontal else 'vertical' if name == group.vertical
-                    else 'not moved by the movement keys')
-            unit = self.ports[name].units() if name in self.ports else ''
-            extra = f", keys {'/'.join(x or '–' for x in self._extra_labels[name])}" \
-                if name in self._extra_labels else ''
-            title = name if self.setup.label(name) == name else f'{self.setup.label(name)} ({name})'
-            lines.append(f"{title}: {role}, step {self.controller.step(name):.4g} {unit}".rstrip()
-                         + (f', continuous {self._speeds_text(name)}' if self.controller.is_native(name)
-                            else ', continuous' if self.controller.is_continuous(name) else '')
-                         + (', keys inverted' if self.setup.is_inverted(name) else '')
-                         + (', headless' if self.setup.is_headless(name) else '') + extra)
-        return '\n'.join(lines)
+    def decimals(self, name: str) -> int:
+        """Digits shown for this actuator: its own choice, else two more than its step"""
+        chosen = self.setup.value_decimals(name)
+        return chosen if chosen is not None else step_decimals(self.controller.step(name))
 
     # ---------------------------------------------------------------- per-actuator settings from the main view
     def _show_group_menu(self, index: int, actuator: str, global_pos: QtCore.QPoint):
@@ -541,7 +555,7 @@ class KeyboardJog(CustomExt):
         if pair_number:
             sub = menu.addMenu('Pair number')
             current = number_label(self.setup.number(name)) or AUTO
-            for choice in PAIR_CHOICES:
+            for choice in pair_choices():
                 if choice == HIDDEN:
                     continue
                 action = sub.addAction(choice, lambda c=choice: self.set_actuator_setting(name, 'pair', c))
@@ -563,6 +577,14 @@ class KeyboardJog(CustomExt):
                 action.setChecked(True)
                 action.setEnabled(False)
                 action.setToolTip('Settings > Motion > All continuous is on')
+        sub = menu.addMenu('Digits')
+        current = self.setup.value_decimals(name)
+        for choice in (None,) + DECIMALS_CHOICES[:8]:
+            text = f'auto ({step_decimals(self.controller.step(name))})' if choice is None else str(choice)
+            action = sub.addAction(text, lambda c=choice: self.set_actuator_setting(
+                name, 'digits', ui_settings.digits_choice(c)))
+            action.setCheckable(True)
+            action.setChecked(choice == current)
         menu.addAction('Hide', lambda: self.set_actuator_setting(name, 'pair', HIDDEN))
 
     def set_actuator_setting(self, name: str, setting: str, value):
@@ -711,22 +733,17 @@ class KeyboardJog(CustomExt):
         self._update_detail()
         self._set_dirty(True)
 
-    def scale_steps(self, sign: int):
-        """'+' (sign > 0) / '-' (sign < 0): scale the steps (the speeds in continuous jog) of the selected group"""
-        names = [n for n in self.selected_group() if n in self.ports]
-        self.controller.scale_steps(sign, self.setup.step_factor, names)
-
     def _selection_native(self) -> bool:
         return any(self.controller.is_native(n) for n in self.selected_group())
 
+    def _modifier_effect(self, value: float) -> str:
+        if self._selection_native():
+            return 'fast speed' if value > 1 else 'slow speed ÷10'
+        return f"step {'×' if value > 1 else '÷'}{self.controller.step_factor:g}"
+
     def _on_multiplier(self, value: float):
-        """Shift / Ctrl held: shown, used by the actuators in continuous mode"""
-        if value == 1:
-            self.panel.set_mode_text('')
-        elif self._selection_native():
-            self.panel.set_mode_text('fast' if value > 1 else 'slow /10')
-        else:
-            self.panel.set_mode_text('step x10' if value > 1 else 'step /10')
+        """Shift / Ctrl held: shown in the header"""
+        self.panel.set_mode_text('' if value == 1 else self._modifier_effect(value))
 
     # ---------------------------------------------------------------- pressed keys display
     def _unit(self, name: str) -> str:
@@ -737,23 +754,15 @@ class KeyboardJog(CustomExt):
             return
         name = action.actuator
         continuous = self.controller.is_continuous(name)
-        multiplier = self.controller.multiplier if continuous else 1.0
+        multiplier = self.controller.multiplier
         keys = ([] if multiplier == 1 else ['Shift' if multiplier > 1 else 'Ctrl']) + [self.keyboard.last_key]
         sign = '+' if action.direction * (-1 if self.setup.is_inverted(name) else 1) > 0 else '−'
         if self.controller.is_native(name):
             text = f'{name} {sign}{self.controller.jog_speed(name):.4g} {self._unit(name)}/s'
         else:
-            step = self.controller.step(name) * multiplier
+            step = self.controller.step(name) * self.controller.step_multiplier()
             text = f'{name} {sign}{step:.4g} {self._unit(name)}'.rstrip()
         self.panel.key_toast.show_keys(keys, text + (' … while held' if continuous else ''))
-
-    def _show_step_key(self, sign: int):
-        if not self.setup.show_keys:
-            return
-        names = [n for n in self.selected_group() if n in self.ports]
-        steps = ', '.join(f'{self.controller.step(n):.4g} {self._unit(n)}'.rstrip() for n in names)
-        factor = f"{'×' if sign > 0 else '÷'}{self.setup.step_factor:g}"
-        self.panel.key_toast.show_keys([self.keyboard.last_key], f'step {factor} → {steps}')
 
     def _show_select_key(self, number: int):
         if not self.setup.show_keys:
@@ -765,11 +774,8 @@ class KeyboardJog(CustomExt):
     def _show_modifier_key(self, value: float):
         if not self.setup.show_keys or value == 1:
             return
-        if self._selection_native():
-            key, effect = ('Shift', 'fast speed') if value > 1 else ('Ctrl', 'slow speed ÷10')
-        else:
-            key, effect = ('Shift', 'step ×10') if value > 1 else ('Ctrl', 'step ÷10')
-        self.panel.key_toast.show_keys([key], f'{effect} while held (continuous mode)')
+        key = 'Shift' if value > 1 else 'Ctrl'
+        self.panel.key_toast.show_keys([key], f'{self._modifier_effect(value)} while held')
 
     def show_message(self, text: str, warning: bool = False, duration_ms: int = 4000):
         self.panel.show_message(text, warning)
@@ -828,7 +834,7 @@ class KeyboardJog(CustomExt):
         else:
             orient = 'h' if moved[0] == group.horizontal else 'v'
         units = [self.ports[a].units() if a in self.ports else '' for a in moved]
-        decimals = [step_decimals(self.controller.step(a)) for a in moved]
+        decimals = [self.decimals(a) for a in moved]
         self.history_plot.set_group(group.title, orient, moved, units, decimals, self.group_color(self.selected))
         self.history_plot.set_marks([(p.name, p.values) for p in self.positions.list(moved)])
         self.history_plot.set_points(self.history.points(moved), self._live_point(group))
@@ -842,7 +848,7 @@ class KeyboardJog(CustomExt):
         for actuator, value in zip(group.moved, values):
             if actuator not in self.ports:
                 continue
-            decimals = step_decimals(self.controller.step(actuator))
+            decimals = self.decimals(actuator)
             current = self.values.get(actuator)
             start = f'{current:.{decimals}f} → ' if current is not None else '→ '
             lines.append(f'{actuator}: {start}{value:.{decimals}f} {self.ports[actuator].units()}'.rstrip())

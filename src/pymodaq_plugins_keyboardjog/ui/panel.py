@@ -2,7 +2,11 @@
 
 Layout: one line per group (colored number, name, horizontal value, vertical value, units), in columns of at most 5
 lines (6 groups: 3 + 3, 10 groups: 5 + 5). The values are right-aligned in a fixed-width font, with a fixed number of
-decimals per actuator (from its step), so that they do not move. The selected line is on a light band, the others are
+decimals per actuator (chosen, or from its step), so that they do not move. An *active* actuator (e.g. a PID setpoint
+while its PID runs, see ``set_active``) has its line in green.
+
+Tooltips are one line: verbose (default, a few words more and a pointer to the ? button) or concise, chosen in the
+menu of the ? button, which also opens the full help. The selected line is on a light band, the others are
 dimmed. A headless actuator shows no value (its name turns orange while it moves). The keys, steps, mode and
 displacement since the selection of the selected group only are in the detail line below. The history plot is on
 the right side.
@@ -22,6 +26,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from qtpy import QtCore, QtGui, QtWidgets
 
 from ..core.input import KeyboardInput
+from ..core.model import TIPS_CONCISE, TIPS_VERBOSE
 
 Qt = QtCore.Qt
 
@@ -32,14 +37,48 @@ BUSY_BACKGROUND = '#e67e22'
 SELECTION_BAND = 'rgba(39, 174, 96, 30)'
 #: muted colors of the group numbers (also the color of the group in the history)
 GROUP_COLORS = ('#5b8db8', '#d9895b', '#6aa56a', '#c96a6a', '#8c7bb5', '#a68662', '#c27aa8', '#5fa8a8',
-                '#b8a54f', '#7f8c99')
+                '#b8a54f', '#7f8c99', '#5f9ec9', '#b5756f')
 MAX_LINES = 5            # lines per column of groups
 COLUMNS_PER_BLOCK = 6    # number, name, horizontal, vertical, units, gap
 
 
+VERBOSE_SUFFIX = '  (?: shorter tips)'
+
+#: tooltips of the panel widgets: (verbose, concise), one line each
+TIPS = {
+    'close': ('Close Keyboard Jog: the moves it started are stopped', 'Close'),
+    'on_top': ('Keep this window above the other windows', 'On top'),
+    'positions': ('Saved positions of the selection: go to one, save the current one', 'Saved positions'),
+    'history': ('History of the moves of the selection: click a point to go back', 'History'),
+    'settings': ('Settings: actuators, keys, motion, setups', 'Settings'),
+    'help': ('Help, and verbose / concise tooltips', 'Help'),
+    'state': ('Green: the keys move the actuators. Red: keys ignored, click to activate', 'Green: keys active'),
+    'detail': ('Selection: keys, step, Δ since selected. Shift: step ×10, Ctrl: ÷10', 'Shift ×10 · Ctrl ÷10'),
+}
+
+
+def tip_text(verbose: str, concise: str, mode: str) -> str:
+    """The tooltip of this mode ('' stays '')"""
+    if mode == TIPS_CONCISE:
+        return concise
+    return f'{verbose}{VERBOSE_SUFFIX}' if verbose else ''
+
+
+def line_tips(number: str, move_keys_label: str) -> Tuple[str, str]:
+    """(verbose, concise) tooltip of a group line"""
+    select = f'Key {number} or click: select' if number else 'Click: select'
+    return f'{select} · {move_keys_label}: move · right-click: options', 'Right-click: options'
+
+
 def hint_text(move_keys_label: str) -> str:
-    return (f'1-9, 0 or click: select (again: reset Δ)   {move_keys_label}: move   + / -: step\n'
-            f'right-click a line: number, rename, pair, keys, continuous, headless, hide')
+    """Full help of the generic keys (the ? button)"""
+    return (f'Green border: the keys move the actuators. Red: keys ignored, click the window to activate.\n\n'
+            f'1-9, 0 and the two keys right of 0 (or a click): select a group. Again: reset Δ.\n'
+            f'{move_keys_label}: move the selection (A/D horizontal actuator, S/W vertical one).\n'
+            f'Shift held: step × the step factor (fast speed in continuous jog). Ctrl held: step ÷ the factor.\n'
+            f'Right-click a line: number, rename, pair, digits, keys, continuous, headless, hide.\n'
+            f'Graph button: history of the moves (click a point to go back). Target button: saved positions.\n'
+            f'Settings: per actuator step, speeds, extra keys; setups saved by name.')
 
 
 def group_color(index: int) -> str:
@@ -89,11 +128,13 @@ def value_decimals(step: Optional[float]) -> Optional[int]:
     return min(max(0, 2 - int(math.floor(math.log10(step)))), 9)
 
 
-def format_value(value: Optional[float], units: str = '', step: Optional[float] = None) -> str:
-    """Value with a fixed number of decimals given by the step (and units)"""
+def format_value(value: Optional[float], units: str = '', step: Optional[float] = None,
+                 decimals: Optional[int] = None) -> str:
+    """Value with a fixed number of decimals: the given one, else from the step (and units)"""
     if value is None:
         return '---'
-    decimals = value_decimals(step)
+    if decimals is None:
+        decimals = value_decimals(step)
     if decimals is not None and abs(value) < 1e9:
         text = f'{value:.{decimals}f}'
         if float(text) == 0:
@@ -182,9 +223,13 @@ class _Line:
     def is_busy_label(self, label: QtWidgets.QLabel) -> bool:
         return bool(label.property('busy'))
 
-    def apply_style(self, busy: Set[str], normal: str, muted: str, value_font: QtGui.QFont):
-        """Selected: normal color, bold name, values one point larger. Others dimmed. Moving: orange background"""
+    def apply_style(self, busy: Set[str], normal: str, muted: str, value_font: QtGui.QFont,
+                    active: Set[str] = frozenset()):
+        """Selected: normal color, bold name, values one point larger. Others dimmed. Moving: orange background.
+        Active (e.g. a running regulation): green"""
         color = normal if self.selected else muted
+        if any(a in active for a in self.info.actuators):
+            color = ARMED_COLOR
         font = QtGui.QFont(self.name.font())
         font.setBold(self.selected)
         self.name.setFont(font)
@@ -273,6 +318,7 @@ class JogPanel(QtWidgets.QFrame):
     positions_requested = QtCore.Signal(QtCore.QPoint)        # global position of the positions button
     group_clicked = QtCore.Signal(int)
     context_requested = QtCore.Signal(int, str, QtCore.QPoint)   # group, actuator ('' = the line), global pos
+    tips_mode_changed = QtCore.Signal(str)
 
     def __init__(self, keyboard: KeyboardInput, parent: QtWidgets.QWidget = None):
         super().__init__(parent)
@@ -288,6 +334,13 @@ class JogPanel(QtWidgets.QFrame):
         self._selected = -1
         self._detail_plain = ''
         self._value_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
+        self._decimals: Dict[str, Optional[int]] = {}      # chosen digits per actuator (None: from the step)
+        self._active: Set[str] = set()
+        self.tips_mode = TIPS_VERBOSE
+        self._tips: Dict[QtWidgets.QWidget, Tuple[str, str]] = {}
+        self._move_keys_label = 'W A S D'
+        self.help_text = hint_text(self._move_keys_label)   # full help of the ? button (set by the extension)
+        self._help_box: Optional[QtWidgets.QMessageBox] = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -295,8 +348,7 @@ class JogPanel(QtWidgets.QFrame):
 
         header = QtWidgets.QHBoxLayout()
         header.setSpacing(6)
-        self.close_button = self._tool_button(close_icon(), '✕', 'Close Keyboard Jog (the moves it started are '
-                                                                 'stopped)')
+        self.close_button = self._tool_button(close_icon(), '✕', '')
         if self.close_button.icon().isNull():
             self.close_button.setStyleSheet(f'color: {DISARMED_COLOR}; font-weight: bold;')
         self.state_label = QtWidgets.QLabel('')
@@ -304,18 +356,14 @@ class JogPanel(QtWidgets.QFrame):
         self.mode_label.setStyleSheet(f'color: {WARNING_COLOR}; font-weight: bold;')
         self.on_top_check = QtWidgets.QCheckBox('On top')
         self.on_top_check.setChecked(True)
-        self.on_top_check.setToolTip('Keep this window above the other windows')
         self.on_top_check.setFocusPolicy(Qt.NoFocus)
-        self.positions_button = self._tool_button(pymodaq_icon(('target',), ARMED_COLOR), 'Pos.',
-                                                  'Saved positions of the selected group: go to one, save the '
-                                                  'current position')
-        self.history_button = self._tool_button(None, '', 'Show / hide the history of the moves of the selected '
-                                                          'group')
+        self.positions_button = self._tool_button(pymodaq_icon(('target',), ARMED_COLOR), 'Pos.', '')
+        self.history_button = self._tool_button(None, '', '')
         self.history_button.setCheckable(True)
         self._update_history_icon(False)
-        self.settings_button = self._tool_button(None, 'Settings', 'Show / hide the settings')
+        self.settings_button = self._tool_button(None, 'Settings', '')
         self.settings_button.setCheckable(True)
-        self.help_button = self._tool_button(pymodaq_icon(('help', 'help1'), 'gray'), '?', hint_text('W A S D'))
+        self.help_button = self._tool_button(pymodaq_icon(('help', 'help1'), 'gray'), '?', '')
         header.addWidget(self.close_button)
         header.addWidget(self.state_label)
         header.addStretch()
@@ -352,7 +400,6 @@ class JogPanel(QtWidgets.QFrame):
 
         self.detail_label = QtWidgets.QLabel('')
         self.detail_label.setTextFormat(Qt.RichText)
-        self.detail_label.setToolTip('Selected group: keys, step, mode and displacement since its selection (Δ)')
         left.addWidget(self.detail_label)
 
         self.message_label = QtWidgets.QLabel('')
@@ -385,9 +432,12 @@ class JogPanel(QtWidgets.QFrame):
         self.positions_button.clicked.connect(
             lambda: self.positions_requested.emit(self.positions_button.mapToGlobal(
                 QtCore.QPoint(0, self.positions_button.height()))))
-        self.help_button.clicked.connect(lambda: QtWidgets.QToolTip.showText(
-            self.help_button.mapToGlobal(QtCore.QPoint(0, self.help_button.height())), self.help_button.toolTip(),
-            self.help_button))
+        self.help_button.clicked.connect(self._show_help_menu)
+        for key, widget in (('close', self.close_button), ('on_top', self.on_top_check),
+                            ('positions', self.positions_button), ('history', self.history_button),
+                            ('settings', self.settings_button), ('help', self.help_button),
+                            ('state', self.state_label), ('detail', self.detail_label)):
+            self.set_tip(widget, *TIPS[key])
 
         self.key_toast = KeyToast(self)
 
@@ -396,6 +446,67 @@ class JogPanel(QtWidgets.QFrame):
         self._watchdog.timeout.connect(self.update_armed)
         self._watchdog.start()
         self.update_armed()
+
+    # ------------------------------------------------------------------ tooltips and help
+    def set_tip(self, widget: QtWidgets.QWidget, verbose: str, concise: str):
+        """One-line tooltip of a widget, (verbose, concise) shown according to the tips mode"""
+        self._tips[widget] = (verbose, concise)
+        widget.setToolTip(tip_text(verbose, concise, self.tips_mode))
+
+    def tip(self, verbose: str, concise: str) -> str:
+        """Text of a tooltip in the current mode (for the widgets of an embedding application)"""
+        return tip_text(verbose, concise, self.tips_mode)
+
+    def set_tips_mode(self, mode: str):
+        """Verbose or concise tooltips (the ? button), applied at once"""
+        if mode not in (TIPS_VERBOSE, TIPS_CONCISE):
+            mode = TIPS_VERBOSE
+        changed = mode != self.tips_mode
+        self.tips_mode = mode
+        for widget, (verbose, concise) in list(self._tips.items()):
+            try:
+                widget.setToolTip(tip_text(verbose, concise, mode))
+            except RuntimeError:               # deleted widget
+                self._tips.pop(widget, None)
+        self._apply_line_tips()
+        if changed:
+            self.tips_mode_changed.emit(mode)
+
+    def _apply_line_tips(self):
+        for line in self._lines:
+            text = line.info.tooltip or tip_text(*line_tips(line.info.number, self._move_keys_label),
+                                                 self.tips_mode)
+            for label in line.labels:
+                label.setToolTip(text)
+
+    def help_menu(self) -> QtWidgets.QMenu:
+        """Menu of the ? button: the full help, the tooltips mode"""
+        menu = QtWidgets.QMenu(self)
+        menu.addAction('Help: keys and mouse…', self.show_help)
+        menu.addSeparator()
+        group = (getattr(QtWidgets, 'QActionGroup', None) or QtGui.QActionGroup)(menu)
+        for mode, text in ((TIPS_VERBOSE, 'Tooltips: verbose'), (TIPS_CONCISE, 'Tooltips: concise')):
+            action = menu.addAction(text, lambda m=mode: self.set_tips_mode(m))
+            action.setCheckable(True)
+            action.setChecked(self.tips_mode == mode)
+            group.addAction(action)
+        return menu
+
+    def _show_help_menu(self):
+        menu = self.help_menu()
+        pos = self.help_button.mapToGlobal(QtCore.QPoint(0, self.help_button.height()))
+        menu.exec(pos) if hasattr(menu, 'exec') else menu.exec_(pos)
+        self.setFocus(Qt.OtherFocusReason)
+
+    def show_help(self):
+        """The full help in a non-modal box (click the panel again to activate the keys)"""
+        if self._help_box is None:
+            self._help_box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Information, 'Keyboard Jog: help', '',
+                                                   QtWidgets.QMessageBox.Close, self.window())
+            self._help_box.setModal(False)
+        self._help_box.setText(self.help_text)
+        self._help_box.show()
+        self._help_box.raise_()
 
     def set_key_toast_enabled(self, enabled: bool):
         """Pressed keys display: a line is kept free for it at the bottom of the lines"""
@@ -492,10 +603,13 @@ class JogPanel(QtWidgets.QFrame):
                 self._show_value(name)
         self.empty_label.setVisible(not rows)
         self.detail_label.setVisible(bool(rows))
+        self._apply_line_tips()
         self.set_selected(self._selected)
 
     def set_hint(self, move_keys_label: str):
-        self.help_button.setToolTip(hint_text(move_keys_label))
+        """Labels of the movement keys (line tooltips)"""
+        self._move_keys_label = move_keys_label
+        self._apply_line_tips()
 
     def row_names(self) -> List[str]:
         """The actuators of the lines, in the line order"""
@@ -537,7 +651,23 @@ class JogPanel(QtWidgets.QFrame):
     def _restyle(self):
         normal, muted = self._colors()
         for line in self._lines:
-            line.apply_style(self._busy, normal, muted, self._value_font)
+            line.apply_style(self._busy, normal, muted, self._value_font, self._active)
+
+    def set_active(self, name: str, active: bool):
+        """Line of this actuator in green while it is active (e.g. a PID setpoint while its PID runs)"""
+        if (name in self._active) == bool(active):
+            return
+        if active:
+            self._active.add(name)
+        else:
+            self._active.discard(name)
+        line = self._line_of.get(name)
+        if line is not None:
+            normal, muted = self._colors()
+            line.apply_style(self._busy, normal, muted, self._value_font, self._active)
+
+    def is_active(self, name: str) -> bool:
+        return name in self._active
 
     def set_detail(self, items: Sequence[DetailItem]):
         """Detail line of the selected group: key caps, then step / mode / Δ of each actuator"""
@@ -563,12 +693,21 @@ class JogPanel(QtWidgets.QFrame):
         self._steps[name] = step
         self._show_value(name)
 
+    def set_decimals(self, name: str, decimals: Optional[int]):
+        """Digits shown after the decimal point (None: from the step)"""
+        if self._decimals.get(name) != decimals:
+            self._decimals[name] = decimals
+            line = self._line_of.get(name)
+            if line is not None and name in line.values:
+                line.values[name].setMinimumWidth(0)      # fewer digits: the column may shrink
+            self._show_value(name)
+
     def _show_value(self, name: str):
         line = self._line_of.get(name)
         if line is None or name in line.info.headless:
             return
         label = line.values[name]
-        text = format_value(self._values.get(name), '', self._steps.get(name))
+        text = format_value(self._values.get(name), '', self._steps.get(name), self._decimals.get(name))
         label.setText(text)
         font = QtGui.QFont(self._value_font)
         if font.pointSizeF() > 0:
@@ -592,7 +731,7 @@ class JogPanel(QtWidgets.QFrame):
         line = self._line_of.get(name)
         if line is not None:
             normal, muted = self._colors()
-            line.apply_style(self._busy, normal, muted, self._value_font)
+            line.apply_style(self._busy, normal, muted, self._value_font, self._active)
 
     def is_busy_shown(self, name: str) -> bool:
         line = self._line_of.get(name)

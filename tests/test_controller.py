@@ -98,20 +98,31 @@ def test_continuous_min_interval(rig):
     assert len(ports['X'].moves) == 2
 
 
-def test_multiplier_only_in_continuous_mode(rig):
+def test_multiplier_in_both_modes(rig):
+    """Shift / Ctrl scale the steps by the step factor in step mode too (they replaced the + / - keys)"""
     ctrl, ports, clock, _ = rig
     ctrl.set_multiplier(10.0)
     ctrl.press(X_PLUS)
-    assert ports['X'].moves == [0.5]          # step mode: modifiers ignored
     ctrl.release(X_PLUS)
     ports['X'].finish()
+    ctrl.set_multiplier(0.1)
+    ctrl.press(X_PLUS)
+    ctrl.release(X_PLUS)
+    ports['X'].finish()
+    ctrl.step_factor = 4.0
+    ctrl.set_multiplier(10.0)
+    ctrl.press(X_PLUS)
+    ctrl.release(X_PLUS)
+    ports['X'].finish()
+    ctrl.step_factor = 10.0
+    assert ports['X'].moves == pytest.approx([5.0, 0.05, 2.0])
     ctrl.continuous = {'X', 'Y'}
     ctrl.set_multiplier(10.0)
     ctrl.press(X_PLUS)
     ports['X'].finish()
     ctrl.set_multiplier(0.1)
     ports['X'].finish()
-    assert ports['X'].moves == pytest.approx([0.5, 5.0, 5.0, 0.05])
+    assert ports['X'].moves[3:] == pytest.approx([5.0, 5.0, 0.05])
     assert ctrl.step('X') == 0.5              # the stored step is unchanged
 
 

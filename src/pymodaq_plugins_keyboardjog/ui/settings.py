@@ -11,11 +11,12 @@ from typing import Callable, Dict, List, Optional, Sequence
 from pymodaq_gui.parameter import Parameter
 
 from ..core.keys import MOVE_KEY_SETS, WASD, normalize_key_name
-from ..core.model import AUTO, AXES, HIDDEN, PAIR_CHOICES, ExtraKeys, JogSetup, number_label, number_of
+from ..core.model import (AUTO, AXES, DECIMALS_CHOICES, HIDDEN, TIPS_MODES, TIPS_VERBOSE, ExtraKeys, JogSetup,
+                          number_label, number_of, pair_choices)
 
 KEY_TIP = ("Key name, e.g. PgUp, PgDown, Home, End, Ins, Del, F2... (no modifiers; the digits, the movement keys, "
-           "'+', '-', '=', Shift, Ctrl and Tab are reserved)")
-PAIR_TIP = ("Number key (1..9, 0) selecting this actuator. Two actuators with the same number form a pair, moved "
+           "'-', '=', ')', Enter, Shift, Ctrl and Tab are reserved)")
+PAIR_TIP = ("Number key (1..9, 0, then the two keys right of 0) selecting this actuator. Two actuators with the same number form a pair, moved "
             "together: one horizontal, one vertical. auto: a number of its own, the first free one. hidden: not in "
             "the window")
 HEADLESS_TIP = ('Its value is not shown (e.g. a picomotor without encoder): its moves are only seen in the history; '
@@ -25,12 +26,14 @@ AXIS_TIP = ('horizontal: moved by the left / right keys (A / D or Q / D, arrows)
 CONTINUOUS_TIP = ('off: one key press = one step. on: the actuator moves while the key is held. With a plugin '
                   'implementing the continuous jog (pymodaq_plugins_hhglab): at constant speed, the slow speed '
                   '(Shift: the fast one, Ctrl: slow / 10), stopped at the key release. Otherwise: steps repeated, each '
-                  'one once the previous move is done (Shift = step x10, Ctrl = step /10 while held)')
+                  'one once the previous move is done (Shift = step x the step factor, Ctrl = step / it while held)')
 SPEED_TIP = 'Speed of the continuous motion (continuous mode, plugins with a continuous jog only)'
 INVERT_TIP = 'The - / + keys of this actuator are swapped (A moves +, D moves -; S moves +, W moves -)'
+DIGITS_TIP = 'Digits shown after the decimal point. auto: two more than the step'
+DIGITS_CHOICES = ('auto',) + tuple(str(n) for n in DECIMALS_CHOICES)
 
 GENERAL_NAMES = ('all_continuous', 'move_keys', 'step_factor', 'always_on_top', 'show_history', 'show_keys',
-                 'min_interval_ms', 'stop_on_focus_loss', 'move_timeout_s')
+                 'min_interval_ms', 'stop_on_focus_loss', 'move_timeout_s', 'tips')
 
 
 def settings_params() -> list:
@@ -57,7 +60,7 @@ def settings_params() -> list:
              'value': WASD, 'tip': 'Keys moving the selection. wasd: the W A S D keys by their position on the '
                                    'keyboard (Z Q S D on an AZERTY keyboard). arrows: the arrow keys. both.'},
             {'title': 'Step factor:', 'name': 'step_factor', 'type': 'float', 'value': 10.0, 'min': 1.01,
-             'tip': "The '+' key multiplies the step by this factor, the '-' key divides it"},
+             'tip': 'While Shift is held a step is multiplied by this factor, divided by it with Ctrl'},
             {'title': 'Min. interval (ms):', 'name': 'min_interval_ms', 'type': 'int', 'value': 0, 'min': 0,
              'tip': 'Continuous mode: minimum time between the end of a step and the next one'},
             {'title': 'Stop on focus loss:', 'name': 'stop_on_focus_loss', 'type': 'bool', 'value': True,
@@ -69,6 +72,8 @@ def settings_params() -> list:
              'tip': 'History of the moves of the selected group (also the graph button of the window)'},
             {'title': 'Show pressed keys:', 'name': 'show_keys', 'type': 'bool', 'value': False,
              'tip': 'Each key press and its effect shown for a moment at the bottom of the window (demos, teaching)'},
+            {'title': 'Tooltips:', 'name': 'tips', 'type': 'list', 'limits': list(TIPS_MODES), 'value': TIPS_VERBOSE,
+             'tip': 'verbose: one explanatory line. concise: a few words (also in the menu of the ? button)'},
         ]},
         {'title': 'Extra keys', 'name': 'extra', 'type': 'group', 'expanded': False, 'children': [
             {'title': 'Add extra keys', 'name': 'add', 'type': 'action',
@@ -86,7 +91,7 @@ def fill_actuators(settings: Parameter, names: Sequence[str], units: Dict[str, s
         number = setup.number(name)
         pair = HIDDEN if name in setup.hidden else number_label(number) if number else AUTO
         group.addChild({'title': name, 'name': f'act{i:02d}', 'type': 'group', 'expanded': False, 'children': [
-            {'title': 'Pair:', 'name': 'pair', 'type': 'list', 'limits': list(PAIR_CHOICES), 'value': pair,
+            {'title': 'Pair:', 'name': 'pair', 'type': 'list', 'limits': list(pair_choices()), 'value': pair,
              'tip': PAIR_TIP},
             {'title': 'Keys:', 'name': 'axis', 'type': 'list', 'limits': list(AXES), 'value': setup.axis(name),
              'tip': AXIS_TIP},
@@ -102,7 +107,14 @@ def fill_actuators(settings: Parameter, names: Sequence[str], units: Dict[str, s
              'tip': INVERT_TIP},
             {'title': 'Headless:', 'name': 'headless', 'type': 'bool', 'value': setup.is_headless(name),
              'tip': HEADLESS_TIP},
+            {'title': 'Digits:', 'name': 'digits', 'type': 'list', 'limits': list(DIGITS_CHOICES),
+             'value': digits_choice(setup.value_decimals(name)), 'tip': DIGITS_TIP},
         ]})
+
+
+def digits_choice(decimals) -> str:
+    """Digits setting -> its choice in the tree ('auto' for None)"""
+    return 'auto' if decimals is None else str(int(decimals))
 
 
 def actuator_group(settings: Parameter, name: str) -> Optional[Parameter]:
@@ -185,6 +197,9 @@ def read_setup(settings: Parameter) -> JogSetup:
         setup.fast_speeds[name] = float(group.child('fast').value())
         if group.child('invert').value():
             setup.inverted.append(name)
+        digits = str(group.child('digits').value())
+        if digits.isdigit() and int(digits) in DECIMALS_CHOICES:
+            setup.decimals[name] = int(digits)
         pair = group.child('pair').value()
         number = number_of(pair)
         if number is not None:

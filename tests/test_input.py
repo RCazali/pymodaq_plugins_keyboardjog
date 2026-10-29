@@ -18,7 +18,8 @@ def kb():
     log = []
     kb.move_pressed.connect(lambda a: log.append(('press', a.actuator, a.direction)))
     kb.move_released.connect(lambda a: log.append(('release', a.actuator, a.direction)))
-    kb.step_scale_requested.connect(lambda s: log.append(('scale', s)))
+    kb.enter_pressed.connect(lambda: log.append(('enter',)))
+    kb.select_requested.connect(lambda n: log.append(('select', n)))
     kb.multiplier_changed.connect(lambda m: log.append(('mult', m)))
     kb.reset_requested.connect(lambda: log.append(('reset',)))
     return kb, log
@@ -49,12 +50,22 @@ def test_unbound_keys_are_not_consumed(kb):
     assert log == []
 
 
-def test_step_keys(kb):
+def test_keys_right_of_zero_select_groups_11_and_12(kb):
+    """The former step keys (+ / -): now the groups 11 and 12, Shift / Ctrl scale the steps"""
     kb, log = kb
-    kb.key_press(key_event('press', Qt.Key_Plus))
     kb.key_press(key_event('press', Qt.Key_Minus))
     kb.key_press(key_event('press', Qt.Key_Equal))
-    assert log == [('scale', 1), ('scale', -1), ('scale', 1)]
+    kb.key_press(key_event('press', Qt.Key_Plus))
+    assert [e for e in log if e[0] != 'mult'] == [('select', 11), ('select', 12), ('select', 12)]
+
+
+def test_enter_only_when_enabled(kb):
+    kb, log = kb
+    assert not kb.key_press(key_event('press', Qt.Key_Return))     # not a key of the extension
+    kb.enter_enabled = True
+    assert kb.key_press(key_event('press', Qt.Key_Return))
+    assert kb.key_press(key_event('press', Qt.Key_Enter))
+    assert log == [('enter',), ('enter',)]
 
 
 def test_modifiers(kb):

@@ -4,12 +4,13 @@ Keyboard model:
 
 * every actuator has a few settings of its own: **pair** (``hidden``, ``auto``, 1..9, 0), **keys** (horizontal or
   vertical), **invert** (the - / + keys swapped), step size, step or continuous motion, the slow / fast **speeds** of
-  the continuous motion, and **headless** (its value is not shown: e.g. a picomotor, whose moves are only seen in the
+  the continuous motion, the **digits** shown after the point (auto: from the step), and **headless** (its value is not shown: e.g. a picomotor, whose moves are only seen in the
   history);
 * the actuators sharing a pair number form one numbered **group** (a pair: e.g. the X and Y of a stage). An actuator
   left on ``auto`` is a group of its own and takes the first free number; a ``hidden`` one is not in the window at
   all. The number key (1..9, 0) or a click selects a group; the movement keys (W A S D and / or the arrows) move it:
-  left / right the *horizontal* actuator, down / up the *vertical* one; ``+`` / ``-`` scale its steps;
+  left / right the *horizontal* actuator, down / up the *vertical* one; Shift / Ctrl scale its steps while held.
+  The two keys right of 0 select the groups 11 and 12;
 * a pair has a name (by its number), and any actuator a name of its own shown instead of its Dashboard name;
 * **extra keys** bind a (not hidden) actuator to two keys of the user's choice, active whatever the selection.
 
@@ -29,30 +30,50 @@ AXES = (HORIZONTAL, VERTICAL)
 
 AUTO = 'auto'
 HIDDEN = 'hidden'
-GROUP_NUMBERS = tuple(range(1, 11))       # 10 is the '0' key
-PAIR_CHOICES = (HIDDEN, AUTO) + tuple(str(n % 10) for n in GROUP_NUMBERS)
+GROUP_NUMBERS = tuple(range(1, 13))       # 10 is the '0' key, 11 and 12 the two keys right of it
+#: labels of the keys of the groups 10..12 (11: '-' on QWERTY, ')' on AZERTY), see set_group_key_labels
+_KEY_LABELS = {10: '0', 11: '-', 12: '='}
+_KEY_ALIASES = {'-': 11, ')': 11, '_': 11, '°': 11, '=': 12, '+': 12}
+
+TIPS_VERBOSE = 'verbose'
+TIPS_CONCISE = 'concise'
+TIPS_MODES = (TIPS_VERBOSE, TIPS_CONCISE)
+DECIMALS_CHOICES = tuple(range(0, 10))    # digits after the decimal point of a value (absent: from the step)
 
 DEFAULT_STEP = 1.0
 DEFAULT_SPEED_STEPS = 10.0      # slow speed of an actuator not configured: 10 steps / s
 FAST_FACTOR = 10.0              # fast speed of an actuator not configured: 10 x the slow one
 
 
+def set_group_key_labels(labels: Dict[int, str]):
+    """Labels of the keys of the groups 10..12 as printed on this keyboard (keys.group_key_labels)"""
+    _KEY_LABELS.update({n: str(t) for n, t in labels.items() if n in (10, 11, 12) and str(t)})
+
+
 def number_label(number: Optional[int]) -> str:
-    """Group number -> its key ('0' for 10, '' for no number)"""
+    """Group number -> its key ('0' for 10, '-' or ')' for 11, '=' for 12, '' for no number)"""
     if number is None:
         return ''
-    return str(number % 10)
+    return _KEY_LABELS.get(number, str(number))
 
 
 def number_of(label) -> Optional[int]:
-    """Pair choice ('auto', '1'..'9', '0') -> group number (None for auto / invalid)"""
+    """Pair choice ('auto', '1'..'9', '0', the key of 11 or 12, or '11', '12') -> group number (None for auto /
+    invalid)"""
     text = str(label).strip()
+    if text in _KEY_ALIASES:
+        return _KEY_ALIASES[text]
     if not text.isdigit():
         return None
     value = int(text)
     if value == 0:
         return 10
     return value if value in GROUP_NUMBERS else None
+
+
+def pair_choices() -> Tuple[str, ...]:
+    """Choices of the pair setting: hidden, auto and the group keys"""
+    return (HIDDEN, AUTO) + tuple(number_label(n) for n in GROUP_NUMBERS)
 
 
 @dataclass
@@ -73,6 +94,7 @@ class JogSetup:
     slow_speeds: Dict[str, float] = field(default_factory=dict)  # continuous jog speed (units / s)
     fast_speeds: Dict[str, float] = field(default_factory=dict)  # idem with Shift
     inverted: List[str] = field(default_factory=list)            # actuators whose - / + keys are swapped
+    decimals: Dict[str, int] = field(default_factory=dict)       # digits shown after the point (absent: auto)
     pair_numbers: Dict[str, int] = field(default_factory=dict)   # actuator -> 1..10 (absent: auto)
     axes: Dict[str, str] = field(default_factory=dict)           # actuator -> horizontal / vertical
     pair_names: Dict[int, str] = field(default_factory=dict)     # group number -> name of the pair
@@ -87,6 +109,7 @@ class JogSetup:
     min_interval_ms: int = 0
     stop_on_focus_loss: bool = True
     move_timeout_s: float = 10.0
+    tips: str = TIPS_VERBOSE                                     # tooltips: verbose / concise (the ? button)
 
     def step(self, actuator: str) -> float:
         return float(self.steps.get(actuator, DEFAULT_STEP))
@@ -98,6 +121,11 @@ class JogSetup:
     def fast_speed(self, actuator: str) -> float:
         speed = float(self.fast_speeds.get(actuator, 0.0))
         return speed if speed > 0 else FAST_FACTOR * self.slow_speed(actuator)
+
+    def value_decimals(self, actuator: str) -> Optional[int]:
+        """Digits shown after the decimal point, None: automatic (from the step)"""
+        value = self.decimals.get(actuator)
+        return value if value in DECIMALS_CHOICES else None
 
     def is_inverted(self, actuator: str) -> bool:
         return actuator in self.inverted
@@ -137,7 +165,8 @@ class JogSetup:
         out = []
         for name in (list(self.hidden) + list(self.pair_numbers) + self.key_bound_actuators() + list(self.headless)
                      + list(self.continuous) + list(self.axes) + list(self.steps) + list(self.actuator_names)
-                     + list(self.slow_speeds) + list(self.fast_speeds) + list(self.inverted)):
+                     + list(self.slow_speeds) + list(self.fast_speeds) + list(self.inverted)
+                     + list(self.decimals)):
             if name not in out:
                 out.append(name)
         return out
@@ -164,6 +193,7 @@ class JogSetup:
                             'slow_speeds': keep(self.slow_speeds),
                             'fast_speeds': keep(self.fast_speeds),
                             'inverted': [a for a in self.inverted if a in present],
+                            'decimals': keep(self.decimals),
                             'pair_numbers': keep(self.pair_numbers),
                             'axes': keep(self.axes),
                             'pair_names': dict(self.pair_names),

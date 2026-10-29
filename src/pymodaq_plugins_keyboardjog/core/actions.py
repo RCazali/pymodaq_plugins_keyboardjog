@@ -23,13 +23,13 @@ class InputSource(QtCore.QObject):
 
     * ``move_pressed`` / ``move_released``: a move action starts / stops being requested (key pressed / released)
     * ``select_requested``: select the group of this number (1 = first group of the main view)
-    * ``step_scale_requested``: +1 to multiply the step sizes by the step factor, -1 to divide them
-    * ``multiplier_changed``: temporary multiplier of the step while it is held (continuous mode: Shift / Ctrl)
+    * ``enter_pressed``: the action of the selected group is requested (Enter)
+    * ``multiplier_changed``: temporary multiplier of the step / speed while it is held (Shift / Ctrl)
     * ``reset_requested``: forget every held action (focus lost...)
     """
     move_pressed = QtCore.Signal(object)
     move_released = QtCore.Signal(object)
     select_requested = QtCore.Signal(int)
-    step_scale_requested = QtCore.Signal(int)
+    enter_pressed = QtCore.Signal()
     multiplier_changed = QtCore.Signal(float)
     reset_requested = QtCore.Signal()

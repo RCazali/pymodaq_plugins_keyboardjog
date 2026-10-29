@@ -5,7 +5,7 @@ from helpers import app
 from pymodaq_plugins_keyboardjog.core import keys
 from pymodaq_plugins_keyboardjog.core.model import (HORIZONTAL, VERTICAL, ExtraKeys, Group, JogSetup, build_groups,
                                                      build_keymap, complete_pair_axes, direction_map, number_label,
-                                                     number_of)
+                                                     number_of, pair_choices, set_group_key_labels)
 
 
 @pytest.fixture(autouse=True)
@@ -50,14 +50,27 @@ def test_digits():
     a_grave = keys.parse_key('À') or 0xc0
     assert keys.digit_of(a_grave, native_scan_code=11, platform='win32') == 10
     assert keys.digit_of(a_grave, native_scan_code=19, platform='linux') == 10
-    # the '-' of the AZERTY 6 key stays the step key
-    assert keys.digit_of(keys.parse_key('-'), native_scan_code=7, platform='win32') is None
+    # the '-' of the AZERTY 6 key is the 6 (no step keys any more)
+    assert keys.digit_of(keys.parse_key('-'), native_scan_code=7, platform='win32') == 6
     assert keys.digit_of(keys.parse_key('A'), native_scan_code=30, platform='win32') is None
+    # the two keys right of 0: groups 11 and 12, by position (')' and '=' on AZERTY), else by key code
+    assert keys.digit_of(keys.parse_key(')'), native_scan_code=12, platform='win32') == 11
+    assert keys.digit_of(keys.parse_key('='), native_scan_code=13, platform='win32') == 12
+    assert keys.digit_of(keys.parse_key('-'), native_scan_code=20, platform='linux') == 11
+    assert keys.digit_of(keys.parse_key('-'), platform='darwin') == 11
+    assert keys.digit_of(keys.parse_key('='), platform='darwin') == 12
+    assert keys.digit_of(keys.parse_key('-'), native_scan_code=0x4A, platform='win32') is None   # keypad -
 
 
 def test_number_labels():
-    assert [number_label(n) for n in (1, 9, 10, None)] == ['1', '9', '0', '']
-    assert [number_of(t) for t in ('1', '9', '0', 'auto', '11', '')] == [1, 9, 10, None, None, None]
+    set_group_key_labels(keys.group_key_labels(azerty=False))
+    assert [number_label(n) for n in (1, 9, 10, 11, 12, None)] == ['1', '9', '0', '-', '=', '']
+    assert [number_of(t) for t in ('1', '9', '0', 'auto', '11', '-', ')', '=', '13', '')] == \
+        [1, 9, 10, None, 11, 11, 11, 12, None, None]
+    set_group_key_labels(keys.group_key_labels(azerty=True))
+    assert number_label(11) == ')'
+    assert pair_choices()[-3:] == ('0', ')', '=')
+    set_group_key_labels(keys.group_key_labels(azerty=False))
 
 
 def test_movement_keys():
@@ -121,10 +134,11 @@ def test_lines_in_columns_of_at_most_five():
                                                                    (2, 5), (3, 4)]
 
 
-def test_zero_key_and_no_number_after_ten():
-    names = [f'M{i}' for i in range(12)]
+def test_zero_key_and_no_number_after_twelve():
+    set_group_key_labels(keys.group_key_labels(azerty=False))
+    names = [f'M{i}' for i in range(14)]
     groups, _ = build_groups(JogSetup(), names)
-    assert [g.label for g in groups] == ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '', '']
+    assert [g.label for g in groups] == ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '', '']
 
 
 def test_direction_map():

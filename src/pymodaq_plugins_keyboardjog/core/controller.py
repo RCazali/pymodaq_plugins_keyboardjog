@@ -12,6 +12,7 @@ Rules (safety, see the specification):
   as the lab's old alignment GUI: the slow speed, the fast one while Shift is held (slow / 10 with Ctrl), stopped at
   the key release; the others repeat steps while the action is held, each one sent when the previous one is done,
   after an optional minimum interval, as the alignment jog of LaserControl;
+* a step (one press, or repeated) is multiplied by the step factor while Shift is held, divided by it with Ctrl;
 * release: a jog is stopped at once; the step repetition stops at once (the step in progress finishes);
 * ``release_all`` (focus lost) forgets every held action, **always stops the jogs** (a jog never outlives its key) and
   can stop the actuators moved by step by this extension;
@@ -81,6 +82,7 @@ class MotionController(QtCore.QObject):
         self.min_interval_s = 0.0
         self.move_timeout_s = 10.0
         self.multiplier = 1.0
+        self.step_factor = 10.0       # Shift: step x step_factor, Ctrl: step / step_factor
         self._states: Dict[str, AxisState] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(TICK_MS)
@@ -175,6 +177,15 @@ class MotionController(QtCore.QObject):
             else:
                 self.set_step(name, self.step(name) * k)
 
+    def step_multiplier(self) -> float:
+        """Multiplier of the steps with the modifiers held now: Shift = step factor, Ctrl = 1 / step factor"""
+        factor = self.step_factor if self.step_factor > 1 else 10.0
+        if self.multiplier > 1:
+            return factor
+        if self.multiplier < 1:
+            return 1.0 / factor
+        return 1.0
+
     def set_multiplier(self, value: float):
         self.multiplier = float(value)
         for name, state in self._states.items():     # Shift / Ctrl pressed or released while a key is held
@@ -196,9 +207,8 @@ class MotionController(QtCore.QObject):
             if not self._jog(action.actuator, state, report=True):
                 state.held.clear()            # refused: pressing again is needed
             return
-        continuous = self.is_continuous(action.actuator)
-        self._try_step(action.actuator, action.direction, self.multiplier if continuous else 1.0, report=True)
-        if continuous:
+        self._try_step(action.actuator, action.direction, self.step_multiplier(), report=True)
+        if self.is_continuous(action.actuator):
             self._timer.start()
 
     def release(self, action: MoveAction):
@@ -365,7 +375,7 @@ class MotionController(QtCore.QObject):
                 self.move_finished.emit(name, None)
             if (self.is_continuous(name) and state.held and not state.pending and not state.jogging
                     and not self.is_native(name) and now - state.done_at >= self.min_interval_s):
-                self._try_step(name, state.held[-1], self.multiplier)
+                self._try_step(name, state.held[-1], self.step_multiplier())
             active = active or state.pending or bool(state.held) or bool(state.jogging) or bool(state.jog_stops)
         if active:
             if not self._timer.isActive():

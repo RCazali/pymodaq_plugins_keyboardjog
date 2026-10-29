@@ -4,7 +4,9 @@ Rules (safety):
 
 * the OS auto-repeat events are ignored: the repetition of the continuous mode is driven by the motion controller;
 * a key is "held" from its press to its release; ``reset`` (focus lost) forgets every held key at once;
-* Shift / Ctrl give a temporary multiplier (x10 / /10), used by the controller in continuous mode only.
+* Shift / Ctrl give a temporary multiplier of the step (x / ÷ the step factor) or of the jog speed while held;
+* the digits and the two keys right of 0 select a group; Enter asks for the action of the selected group (only when
+  ``enter_enabled``: an embedding application gives it a meaning, e.g. Laser Control's "stabilize here").
 
 The widget owning the keyboard focus calls ``key_press`` / ``key_release`` only while it is armed (green).
 """
@@ -15,8 +17,8 @@ from typing import Dict
 from qtpy import QtCore
 
 from .actions import InputSource, MoveAction
-from .keys import (CONTROL_KEY, MODIFIER_KEYS, SHIFT_KEY, STEP_DOWN_KEYS, STEP_UP_KEYS, WASD, digit_of,
-                   direction_of, key_int, key_name)
+from .keys import (CONTROL_KEY, ENTER_KEYS, MODIFIER_KEYS, SHIFT_KEY, WASD, digit_of, direction_of, key_int,
+                   key_name)
 
 Qt = QtCore.Qt
 
@@ -40,7 +42,7 @@ def _scan_code(event) -> int:
     except (AttributeError, TypeError, ValueError):
         return 0
 
-MODIFIER_FACTOR = 10.0  # fixed by the specification: Shift = step x10, Ctrl = step /10
+MODIFIER_FACTOR = 10.0  # multiplier sent for Shift (1 / it for Ctrl): the controller applies its step factor
 
 
 def modifier_multiplier(event, pressed: bool) -> float:
@@ -71,6 +73,7 @@ class KeyboardInput(InputSource):
         self._held_movement = set()            # held keys that are movement keys of the selected group
         self._multiplier = 1.0
         self.last_key = ''                     # label of the last pressed key (pressed keys display)
+        self.enter_enabled = False             # Enter -> enter_pressed (else Enter is not a key of the extension)
 
     @property
     def held(self) -> Dict[int, MoveAction]:
@@ -105,8 +108,8 @@ class KeyboardInput(InputSource):
         return self._keymap.get(key), False
 
     def handles(self, key: int, scan_code: int = 0) -> bool:
-        return (self._action(key, scan_code)[0] is not None or key in STEP_UP_KEYS or key in STEP_DOWN_KEYS
-                or key in MODIFIER_KEYS or digit_of(key, scan_code) is not None)
+        return (self._action(key, scan_code)[0] is not None or key in MODIFIER_KEYS
+                or (self.enter_enabled and key in ENTER_KEYS) or digit_of(key, scan_code) is not None)
 
     def key_press(self, event) -> bool:
         """Process a key press, return True if the key belongs to the extension (event consumed)"""
@@ -116,11 +119,8 @@ class KeyboardInput(InputSource):
             return self.handles(key, scan_code)
         self.last_key = key_text(event)
         self._set_multiplier(modifier_multiplier(event, pressed=True))
-        if key in STEP_UP_KEYS:
-            self.step_scale_requested.emit(+1)
-            return True
-        if key in STEP_DOWN_KEYS:
-            self.step_scale_requested.emit(-1)
+        if self.enter_enabled and key in ENTER_KEYS:
+            self.enter_pressed.emit()
             return True
         action, movement = self._action(key, scan_code)
         if action is not None:

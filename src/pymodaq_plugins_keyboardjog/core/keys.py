@@ -27,9 +27,10 @@ KEY_RIGHT = key_int(Qt.Key_Right)
 KEY_UP = key_int(Qt.Key_Up)
 KEY_DOWN = key_int(Qt.Key_Down)
 
-#: keys changing the step size (``+`` also as ``=``, its unshifted key on US / AZERTY layouts)
-STEP_UP_KEYS = frozenset(key_int(k) for k in (Qt.Key_Plus, Qt.Key_Equal))
-STEP_DOWN_KEYS = frozenset(key_int(k) for k in (Qt.Key_Minus,))
+#: the two keys right of 0 on the top row select the groups 11 and 12 (their key codes when no scan code is known)
+GROUP_11_KEYS = frozenset(key_int(k) for k in (Qt.Key_Minus, Qt.Key_ParenRight, Qt.Key_Underscore))
+GROUP_12_KEYS = frozenset(key_int(k) for k in (Qt.Key_Equal, Qt.Key_Plus))
+ENTER_KEYS = frozenset(key_int(k) for k in (Qt.Key_Return, Qt.Key_Enter))
 
 SHIFT_KEY = key_int(Qt.Key_Shift)
 CONTROL_KEY = key_int(Qt.Key_Control)
@@ -41,10 +42,10 @@ ARROW_CODES = frozenset((KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN))
 #: digit keys selecting the group 1..9, and 10 for the 0 key (top row and keypad give the same key code)
 DIGIT_KEYS = {key_int(getattr(Qt, f'Key_{n}')): n or 10 for n in range(10)}
 
-#: keys that cannot be given to an extra binding: the arrows and digits (selected group), the step size keys,
-#: the modifiers, and Tab (focus navigation of Qt)
-RESERVED_KEYS = STEP_UP_KEYS | STEP_DOWN_KEYS | MODIFIER_KEYS | ARROW_CODES | frozenset(DIGIT_KEYS) | frozenset(
-    key_int(k) for k in (Qt.Key_Tab, Qt.Key_Backtab))
+#: keys that cannot be given to an extra binding: the arrows and the group keys (digits, the two keys right of 0),
+#: the modifiers, Enter (action of the selected group) and Tab (focus navigation of Qt)
+RESERVED_KEYS = GROUP_11_KEYS | GROUP_12_KEYS | ENTER_KEYS | MODIFIER_KEYS | ARROW_CODES | frozenset(DIGIT_KEYS) \
+    | frozenset(key_int(k) for k in (Qt.Key_Tab, Qt.Key_Backtab))
 
 #: keys of the selected group: (first axis -, first axis +, second axis -, second axis +)
 ARROW_KEYS = ('Left', 'Right', 'Down', 'Up')
@@ -121,21 +122,34 @@ def movement_labels(move_keys: str, azerty: bool = None) -> Dict[str, str]:
 
 
 def digit_of(key: int, native_scan_code: int = 0, platform: str = sys.platform) -> Optional[int]:
-    """Group number of a key event (1..9, 10 for the 0 key), None if it is not a digit key
+    """Group number of a key event (1..9, 10 for the 0 key, 11 and 12 for the two keys right of 0), None if it is not
+    a group key
 
-    The digit key code is used when the layout gives it (QWERTY, QWERTZ, keypad, Shift + top row on AZERTY). For the
-    unshifted top row of the AZERTY layout (& é " ' ( - è _ ç à) the physical key position (native scan code) is used
-    on Windows and Linux, except for keys the extension already uses (the '-' of the 6 key stays the step key).
+    The digit key code is used when the layout gives it (QWERTY, QWERTZ, keypad, Shift + top row on AZERTY). Otherwise
+    the physical key position (native scan code) on Windows and Linux: the unshifted top row of the AZERTY layout
+    (& é " ' ( - è _ ç à ) =) and the two keys right of 0 on every layout. Elsewhere these two keys are recognized by
+    their key code (- and = on QWERTY).
     """
     if key in DIGIT_KEYS:
         return DIGIT_KEYS[key]
-    if key in STEP_UP_KEYS or key in STEP_DOWN_KEYS or key in MODIFIER_KEYS:
+    if key in MODIFIER_KEYS:
         return None
-    if platform == 'win32' and 2 <= native_scan_code <= 11:       # top row 1..9, 0 (set 1 scan codes)
-        return native_scan_code - 1
-    if platform.startswith('linux') and 10 <= native_scan_code <= 19:   # X11 / evdev key codes + 8
-        return native_scan_code - 9
+    if platform == 'win32' and native_scan_code:
+        return native_scan_code - 1 if 2 <= native_scan_code <= 13 else None    # top row 1..9, 0, -, = (set 1)
+    if platform.startswith('linux') and native_scan_code:
+        return native_scan_code - 9 if 10 <= native_scan_code <= 21 else None   # X11 / evdev key codes + 8
+    if key in GROUP_11_KEYS:
+        return 11
+    if key in GROUP_12_KEYS:
+        return 12
     return None
+
+
+def group_key_labels(azerty: bool = None) -> Dict[int, str]:
+    """Labels of the keys of the groups 10, 11 and 12, as printed on the keyboard"""
+    if azerty is None:
+        azerty = is_azerty()
+    return {10: '0', 11: ')' if azerty else '-', 12: '='}
 
 _SYMBOLS = {KEY_LEFT: '←', KEY_RIGHT: '→', KEY_UP: '↑', KEY_DOWN: '↓'}
 
